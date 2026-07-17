@@ -1,0 +1,45 @@
+{
+  "active": { "provider": "openrouter", "model": "anthropic/claude-fable-5" },
+  "providers": {
+    "anthropic": {
+      "kind": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "key_env": "ANTHROPIC_API_KEY",
+      "models": ["claude-fable-5", "claude-opus-4-8", "claude-haiku-4-5"]
+    },
+    "openrouter": {
+      "kind": "openai",
+      "base_url": "https://openrouter.ai/api/v1",
+      "key_env": "OPENROUTER_API_KEY",
+      "models": ["anthropic/claude-fable-5", "moonshotai/kimi-k2.5", "qwen/qwen3-max", "deepseek/deepseek-v3.2"]
+    },
+    "ollama": {
+      "kind": "openai",
+      "base_url": "http://localhost:11434/v1",
+      "api_key": "ollama",
+      "models": ["qwen2.5-coder:14b", "llama3.1:8b", "deepseek-r1:14b"]
+    },
+    "kimi": {
+      "kind": "openai",
+      "base_url": "https://api.kimi.com/coding/v1",
+      "key_env": "KIMI_API_KEY",
+      "models": ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"]
+    },
+    "moonshot": {
+      "kind": "openai",
+      "base_url": "https://api.moonshot.ai/v1",
+      "key_env": "MOONSHOT_API_KEY",
+      "models": ["kimi-k2.5", "moonshot-v1-128k", "moonshot-v1-32k"]
+    },
+    "dashscope": {
+      "kind": "openai",
+      "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "key_env": "DASHSCOPE_API_KEY",
+      "models": ["qwen3-max", "qwen3-coder-plus", "qwen-max"]
+    },
+    "claude-cli": { "kind": "claude-cli", "models": ["default"] }
+  },
+  "tools_dir": "",
+  "work_dir": "",
+  "max_steps": 60
+}

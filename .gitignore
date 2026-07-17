@@ -1,0 +1,29 @@
+# binaries
+/jurig
+/jurig.exe
+*.exe
+
+# bundled portable tools
+/tools-bin/
+/tools/
+
+# samples / targets (never publish real apps)
+*.apk
+*.xapk
+*.apks
+*.dex
+*.so
+*.jar
+*.aab
+
+# analysis output / runtime
+work/
+.jurig/
+jadx_out/
+bundle_extracted/
+*_extracted/
+session.json
+
+# os
+.DS_Store
+Thumbs.db
