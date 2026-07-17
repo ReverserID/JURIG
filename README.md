@@ -1,5 +1,17 @@
 # Jurig
 
+```
+ .-.         ██ ██    ██ ██████  ██  ██████
+(o o)        ██ ██    ██ ██   ██ ██ ██
+| u |        ██ ██    ██ ██████  ██ ██   ███
+|   |   ██   ██ ██    ██ ██   ██ ██ ██    ██
+'~-~'    █████   ██████  ██   ██ ██  ██████
+        autonomous reverse-engineering agent · android · binary · frida
+```
+
+> **Jurig** (Sundanese: *ghost*) — an autonomous AI agent that haunts your
+> binaries. In the TUI the ghost blinks, bobs, and shimmers while it works.
+
 Fully autonomous, AI-agentic **reverse-engineering framework** with a TUI.
 Android-first (APK/DEX) plus native binaries. Written in Go, no MCP — every
 tool is a native subprocess wrapper around a portable RE binary.
