@@ -71,6 +71,27 @@ third-party HTTP harnesses (Apr 2026), so this path shells out to the `claude`
 binary. Advisory/chat only — no native tool-calling; use an `openai`/`anthropic`
 provider for the full autonomous tool loop.
 
+**cursor** (Cursor subscription): API tokens are expensive; a Cursor Pro/Max
+subscription is cheaper. Jurig ships **native Cursor auth**:
+
+```sh
+jurig cursor login     # PKCE browser login → ~/.jurig/cursor-auth.json
+jurig cursor status    # verify / auto-refresh
+jurig cursor token     # print a valid access token
+```
+
+Cursor chat is a stateful Agent protocol (Connect-RPC + protobuf over HTTP/2),
+so today the `cursor` provider talks OpenAI-compat to a local Cursor→OpenAI
+**bridge** (e.g. [opencode-cursor](https://github.com/ephraimduncan/opencode-cursor)):
+
+```sh
+export CURSOR_BASE_URL=http://127.0.0.1:<port>/v1
+jurig            # Ctrl+O → cursor/<model>
+```
+
+A fully-native Go Agent client (no bridge) is in progress. **Using Cursor
+outside the editor may violate its ToS — your account, your risk.**
+
 ## Build
 
 ```sh

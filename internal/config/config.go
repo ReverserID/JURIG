@@ -93,6 +93,15 @@ func Default() *Config {
 				KeyEnv:  "DASHSCOPE_API_KEY",
 				Models:  []string{"qwen3-max", "qwen3-coder-plus", "qwen-max", "qwen-plus"},
 			},
+			"cursor": {
+				// Cursor subscription via a local Cursor->OpenAI bridge
+				// (e.g. opencode-cursor). Run `jurig cursor login` for native
+				// auth, start the bridge, then point base_url at it.
+				Kind:    KindOpenAI,
+				BaseURL: "http://127.0.0.1:8000/v1",
+				APIKey:  "cursor",
+				Models:  []string{"claude-4.5-sonnet", "gpt-5", "auto"},
+			},
 			"claude-cli": {
 				Kind:   KindClaudeCLI,
 				Models: []string{"default"},
@@ -142,6 +151,13 @@ func (c *Config) overlayEnv() {
 	}
 	if v := os.Getenv("JURIG_TOOLS_DIR"); v != "" {
 		c.ToolsDir = v
+	}
+	// Let a running Cursor->OpenAI bridge advertise its port.
+	if v := os.Getenv("CURSOR_BASE_URL"); v != "" {
+		if p, ok := c.Providers["cursor"]; ok {
+			p.BaseURL = v
+			c.Providers["cursor"] = p
+		}
 	}
 }
 

@@ -262,8 +262,17 @@ func cmdCursor(args []string) int {
 		_ = os.Remove(path)
 		fmt.Println("cursor: logged out")
 		return 0
+	case "token":
+		// Print a valid access token (refreshing if needed) for a bridge to use.
+		tok, err := cursor.ValidToken(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cursor:", err)
+			return 1
+		}
+		fmt.Println(tok)
+		return 0
 	default:
-		fmt.Println("usage: jurig cursor login|status|logout")
+		fmt.Println("usage: jurig cursor login|status|token|logout")
 		return 2
 	}
 }

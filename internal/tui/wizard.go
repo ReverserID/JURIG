@@ -37,6 +37,7 @@ var wizardProviders = []provChoice{
 	{"dashscope", "Qwen / Alibaba DashScope", true},
 	{"ollama", "Ollama — local, no key", false},
 	{"anthropic", "Anthropic API — direct key", true},
+	{"cursor", "Cursor subscription — via local bridge (jurig cursor login)", false},
 	{"claude-cli", "Claude subscription — Claude Code, no key", false},
 }
 
