@@ -694,7 +694,9 @@ func (m *model) handleEvent(e agent.Event) {
 		if e.Tool == "read_file" {
 			m.lastRead = pathArg(e.Text)
 		}
-		m.appendRaw(toolStyle.Render(glyph(e.Tool)+" "+e.Tool) + " " + statusStyle.Render(m.clip(e.Text)) + "\n")
+		prefix := glyph(e.Tool) + " " + e.Tool + " "
+		arg := truncate(strings.ReplaceAll(e.Text, "\n", " "), max(6, m.innerWidth()-lipgloss.Width(prefix)-1))
+		m.appendRaw(toolStyle.Render(prefix) + statusStyle.Render(arg) + "\n")
 	case agent.EvToolResult:
 		m.curOp = ""
 		switch {
@@ -705,13 +707,37 @@ func (m *model) handleEvent(e agent.Event) {
 			m.appendMarkdown(e.Text) // jadx/apktool markdown summaries
 		default:
 			m.appendRaw(cmdStyle.Render("  ┗━ ") + statusStyle.Render(fmt.Sprintf("%d bytes", len(e.Text))) + "\n")
-			m.appendRaw(dimBlock(m.wrapText(truncate(e.Text, 1600))) + "\n")
+			m.appendRaw(m.dimBlock(truncate(e.Text, 1600)) + "\n")
 		}
 	case agent.EvCmd:
-		m.appendRaw(neonStyle.Render("  ▸ ") + m.wrapText(cmdStyle.Render(e.Text)) + "\n")
+		m.appendRaw(m.prefixBlock("  ▸ ", cmdStyle, e.Text))
 	case agent.EvError:
-		m.appendRaw(errStyle.Render("✗ "+m.wrapText(e.Text)) + "\n")
+		m.appendRaw(m.prefixBlock("✗ ", errStyle, e.Text))
 	}
+}
+
+// prefixBlock wraps text to the content width MINUS the prefix, then prefixes
+// the first visual line and indents continuations — so styled prefixes can
+// never push a line past the border.
+func (m *model) prefixBlock(prefix string, style lipgloss.Style, text string) string {
+	w := m.innerWidth() - lipgloss.Width(prefix)
+	if w < 10 {
+		w = 10
+	}
+	pad := strings.Repeat(" ", lipgloss.Width(prefix))
+	var b strings.Builder
+	first := true
+	for _, logical := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		for _, vis := range strings.Split(wrap.String(logical, w), "\n") {
+			if first {
+				b.WriteString(neonStyle.Render(prefix) + style.Render(vis) + "\n")
+				first = false
+			} else {
+				b.WriteString(pad + style.Render(vis) + "\n")
+			}
+		}
+	}
+	return b.String()
 }
 
 // previewLines caps how many code lines the TUI card shows. The AI still
@@ -751,16 +777,6 @@ func (m *model) wrapText(s string) string {
 		return s
 	}
 	return wrap.String(s, w)
-}
-
-// clip truncates a one-line status to fit the inner width.
-func (m *model) clip(s string) string {
-	s = strings.TrimSpace(s)
-	w := m.innerWidth() - 12
-	if w < 10 {
-		w = 10
-	}
-	return truncate(s, w)
 }
 
 func (m *model) innerWidth() int {
@@ -911,12 +927,20 @@ func (m *model) banner() string {
 	return b.String()
 }
 
-func dimBlock(s string) string {
-	lines := strings.Split(s, "\n")
-	for i, l := range lines {
-		lines[i] = statusStyle.Render("  │ " + l)
+// dimBlock renders tool output as a dim, border-quoted block, wrapping each
+// line to the content width (minus the "  │ " gutter) so it never overflows.
+func (m *model) dimBlock(s string) string {
+	w := m.innerWidth() - 4
+	if w < 10 {
+		w = 10
 	}
-	return strings.Join(lines, "\n")
+	var out []string
+	for _, logical := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		for _, vis := range strings.Split(wrap.String(logical, w), "\n") {
+			out = append(out, statusStyle.Render("  │ "+vis))
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func truncate(s string, n int) string {

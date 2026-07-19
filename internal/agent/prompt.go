@@ -47,6 +47,15 @@ Available tools: %s
    focused Markdown report: findings, evidence (file:line / method), and a short
    "next steps" list. Do not keep exploring past the goal.
 
+## Asking the operator
+- If you need ANY input to proceed — a missing file/APK path, a scope decision,
+  a credential, which target — you MUST call the ask_user tool. NEVER end your
+  turn with a question written in prose; a stopped turn is not a question the
+  operator can answer, so the run just dies. Prose question = failure.
+- Give 2-4 concrete options when it helps (ask_user renders them as a menu).
+- Example: operator says "analyze the JMO app" but gives no path → call ask_user
+  ("What's the path to the JMO APK/XAPK?") instead of guessing or stopping.
+
 ## Rules
 - Efficiency matters: aim to finish in far fewer steps than the limit. Each tool
   call must serve the plan. If two reads would do, don't do ten.
