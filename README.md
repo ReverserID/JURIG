@@ -81,16 +81,24 @@ jurig cursor token     # print a valid access token
 ```
 
 Cursor chat is a stateful Agent protocol (Connect-RPC + protobuf over HTTP/2),
-so today the `cursor` provider talks OpenAI-compat to a local Cursor→OpenAI
-**bridge** (e.g. [opencode-cursor](https://github.com/ephraimduncan/opencode-cursor)):
+so today the `cursor` provider talks OpenAI-compat to the
+[cursor-openai-api](https://github.com/shawtyygabriel/cursor-openai-api) bridge,
+which Jurig can launch for you (needs `bun` or `node`/`npx`):
 
 ```sh
-export CURSOR_BASE_URL=http://127.0.0.1:<port>/v1
-jurig            # Ctrl+O → cursor/<model>
+jurig cursor bridge login    # one-time OAuth (opens browser)
+jurig cursor serve           # runs the bridge on :3000 — keep this terminal open
+# in another terminal:
+jurig                        # Ctrl+O → cursor/<model>
 ```
 
-A fully-native Go Agent client (no bridge) is in progress. **Using Cursor
-outside the editor may violate its ToS — your account, your risk.**
+`jurig cursor serve [port]` shells out to `cursor-openai-api` via bunx/npx and
+the `cursor` provider defaults to `http://127.0.0.1:3000/v1`. Override with
+`CURSOR_BASE_URL` for a custom port.
+
+Jurig also ships **native Cursor auth** (`jurig cursor login/status/token`) for a
+future no-bridge Go Agent client (in progress). **Using Cursor outside the editor
+may violate its ToS — your account, your risk.**
 
 ## Build
 

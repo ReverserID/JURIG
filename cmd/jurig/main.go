@@ -271,10 +271,58 @@ func cmdCursor(args []string) int {
 		}
 		fmt.Println(tok)
 		return 0
+	case "serve":
+		// Launch the cursor-openai-api bridge (OpenAI-compatible, port 3000).
+		port := "3000"
+		if len(args) > 1 {
+			port = args[1]
+		}
+		fmt.Printf("Starting cursor-openai-api bridge on :%s → set the 'cursor' provider (Ctrl+O)\n", port)
+		fmt.Println("(first time needs login: jurig cursor bridge login)")
+		return runBridge("serve", port)
+	case "bridge":
+		// Passthrough to cursor-openai-api (login, whoami, models, …).
+		return runBridge(args[1:]...)
 	default:
-		fmt.Println("usage: jurig cursor login|status|token|logout")
+		fmt.Println("usage: jurig cursor login|status|token|logout|serve [port]|bridge <args>")
+		fmt.Println("  login/status/token/logout : native Jurig auth (future no-bridge client)")
+		fmt.Println("  serve [port]              : run the cursor-openai-api bridge (default 3000)")
+		fmt.Println("  bridge login|whoami|...   : passthrough to cursor-openai-api")
 		return 2
 	}
+}
+
+// runBridge runs the cursor-openai-api npm package via bunx or npx, inheriting
+// stdio so login prompts and the running server are visible.
+func runBridge(args ...string) int {
+	runner, runnerArgs := bridgeRunner()
+	if runner == "" {
+		fmt.Fprintln(os.Stderr, "cursor: need bun or node/npx installed to run the cursor-openai-api bridge")
+		fmt.Fprintln(os.Stderr, "  install: https://github.com/shawtyygabriel/cursor-openai-api")
+		return 1
+	}
+	full := append(append(runnerArgs, "cursor-openai-api"), args...)
+	cmd := exec.Command(runner, full...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "cursor bridge:", err)
+		return 1
+	}
+	return 0
+}
+
+// bridgeRunner picks an available package runner: bunx, then npx.
+func bridgeRunner() (string, []string) {
+	if p, err := exec.LookPath("bunx"); err == nil {
+		return p, nil
+	}
+	if p, err := exec.LookPath("bun"); err == nil {
+		return p, []string{"x"}
+	}
+	if p, err := exec.LookPath("npx"); err == nil {
+		return p, []string{"-y"}
+	}
+	return "", nil
 }
 
 // openBrowser best-effort opens a URL in the default browser.

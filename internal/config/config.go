@@ -94,11 +94,10 @@ func Default() *Config {
 				Models:  []string{"qwen3-max", "qwen3-coder-plus", "qwen-max", "qwen-plus"},
 			},
 			"cursor": {
-				// Cursor subscription via a local Cursor->OpenAI bridge
-				// (e.g. opencode-cursor). Run `jurig cursor login` for native
-				// auth, start the bridge, then point base_url at it.
+				// Cursor subscription via the cursor-openai-api bridge (default
+				// port 3000). Run `jurig cursor serve` to launch it, then Ctrl+O.
 				Kind:    KindOpenAI,
-				BaseURL: "http://127.0.0.1:8000/v1",
+				BaseURL: "http://127.0.0.1:3000/v1",
 				APIKey:  "cursor",
 				Models:  []string{"claude-4.5-sonnet", "gpt-5", "auto"},
 			},
