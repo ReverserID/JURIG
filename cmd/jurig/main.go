@@ -283,6 +283,29 @@ func cmdCursor(args []string) int {
 	case "bridge":
 		// Passthrough to cursor-openai-api (login, whoami, models, …).
 		return runBridge(args[1:]...)
+	case "chat":
+		// EXPERIMENTAL native Agent protocol test: jurig cursor chat <model> <prompt...>
+		if len(args) < 3 {
+			fmt.Println("usage: jurig cursor chat <model> <prompt>")
+			return 2
+		}
+		tok, err := cursor.ValidToken(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cursor:", err)
+			return 1
+		}
+		model := args[1]
+		prompt := strings.Join(args[2:], " ")
+		fmt.Fprintln(os.Stderr, "[native cursor agent — experimental]")
+		out, err := cursor.NewClient(tok).Chat(context.Background(), model, "You are a helpful assistant.", prompt)
+		if out != "" {
+			fmt.Println(out)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cursor chat:", err)
+			return 1
+		}
+		return 0
 	default:
 		fmt.Println("usage: jurig cursor login|status|token|logout|serve [port]|bridge <args>")
 		fmt.Println("  login/status/token/logout : native Jurig auth (future no-bridge client)")
