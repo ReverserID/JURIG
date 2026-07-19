@@ -203,6 +203,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancel()
 			}
 			return m, tea.Quit
+		case "esc":
+			// Interrupt the running agent so you can steer/correct it.
+			if m.running && m.cancel != nil {
+				m.cancel()
+				m.appendRaw(toolStyle.Render("⏸ interrupted — type a correction to steer the agent") + "\n")
+			}
+			return m, nil
 		case "ctrl+o":
 			m.openPicker()
 			return m, nil
@@ -270,9 +277,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runDoneMsg:
 		m.running = false
 		m.curOp = ""
-		if msg.err != nil {
+		switch {
+		case msg.err != nil && isCanceled(msg.err):
+			m.appendRaw(toolStyle.Render("⏸ stopped — steer with a new message") + "\n\n")
+		case msg.err != nil:
 			m.appendRaw(errStyle.Render("✗ run ended: "+msg.err.Error()) + "\n\n")
-		} else {
+		default:
 			m.appendRaw(neonStyle.Render("■ done") + "\n\n")
 		}
 		m.status = "idle"
@@ -416,8 +426,9 @@ func (m *model) helpView() string {
 		{"PgUp / PgDn", "scroll transcript"},
 		{"Ctrl+F", "search transcript (Enter=next)"},
 		{"Ctrl+O", "switch provider / model"},
+		{"Esc", "interrupt the running agent (then steer it)"},
 		{"F1", "toggle this help"},
-		{"Ctrl+C", "abort run / quit"},
+		{"Ctrl+C", "quit"},
 		{"answer menu", "↑/↓ move · Space or 1-9 toggle · Enter confirm"},
 	}
 	var b strings.Builder
@@ -512,7 +523,7 @@ func (m *model) View() string {
 			op = "thinking"
 		}
 		foot = m.spin.View() + " " + neonStyle.Render("["+op+"]") + " " +
-			statusStyle.Render(m.status+"  ·  Ctrl+C abort")
+			statusStyle.Render(m.status+"  ·  Esc interrupt · Ctrl+C quit")
 	default:
 		foot = m.ti.View()
 	}
@@ -695,7 +706,7 @@ func (m *model) handleEvent(e agent.Event) {
 			m.lastRead = pathArg(e.Text)
 		}
 		prefix := glyph(e.Tool) + " " + e.Tool + " "
-		arg := truncate(strings.ReplaceAll(e.Text, "\n", " "), max(6, m.innerWidth()-lipgloss.Width(prefix)-1))
+		arg := truncate(strings.ReplaceAll(sanitize(e.Text), "\n", " "), max(6, m.innerWidth()-lipgloss.Width(prefix)-1))
 		m.appendRaw(toolStyle.Render(prefix) + statusStyle.Render(arg) + "\n")
 	case agent.EvToolResult:
 		m.curOp = ""
@@ -707,13 +718,35 @@ func (m *model) handleEvent(e agent.Event) {
 			m.appendMarkdown(e.Text) // jadx/apktool markdown summaries
 		default:
 			m.appendRaw(cmdStyle.Render("  ┗━ ") + statusStyle.Render(fmt.Sprintf("%d bytes", len(e.Text))) + "\n")
-			m.appendRaw(m.dimBlock(truncate(e.Text, 1600)) + "\n")
+			m.appendRaw(m.dimBlock(truncate(sanitize(e.Text), 1600)) + "\n")
 		}
 	case agent.EvCmd:
-		m.appendRaw(m.prefixBlock("  ▸ ", cmdStyle, e.Text))
+		m.appendRaw(m.prefixBlock("  ▸ ", cmdStyle, sanitize(e.Text)))
 	case agent.EvError:
-		m.appendRaw(m.prefixBlock("✗ ", errStyle, e.Text))
+		m.appendRaw(m.prefixBlock("✗ ", errStyle, sanitize(e.Text)))
 	}
+}
+
+// isCanceled reports whether an error came from an ESC interrupt.
+func isCanceled(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "context canceled") || strings.Contains(s, "canceled")
+}
+
+// sanitize strips carriage returns and other C0 control bytes from tool output
+// so they can't corrupt the TUI (Windows adb/shell emits CRLF).
+func sanitize(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "")
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1 // drop other control chars
+		}
+		return r
+	}, s)
 }
 
 // prefixBlock wraps text to the content width MINUS the prefix, then prefixes
