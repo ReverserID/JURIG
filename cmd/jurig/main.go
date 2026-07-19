@@ -6,12 +6,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/imtaqin/jurig/internal/agent"
 	"github.com/imtaqin/jurig/internal/config"
+	"github.com/imtaqin/jurig/internal/cursor"
 	"github.com/imtaqin/jurig/internal/llm"
 	"github.com/imtaqin/jurig/internal/portable"
 	"github.com/imtaqin/jurig/internal/proxy"
@@ -38,6 +41,8 @@ func main() {
 			os.Exit(cmdDoctor(*cfgPath))
 		case "setup":
 			forceSetup = true
+		case "cursor":
+			os.Exit(cmdCursor(args[1:]))
 		}
 	}
 
@@ -208,6 +213,73 @@ func cmdDoctor(cfgPath string) int {
 	}
 	fmt.Println("  llm      : ready")
 	return 0
+}
+
+// cmdCursor handles `jurig cursor login|status|logout` — native PKCE auth to a
+// Cursor subscription.
+func cmdCursor(args []string) int {
+	sub := "status"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	path := cursor.DefaultStorePath()
+
+	switch sub {
+	case "login":
+		p, err := cursor.GenerateAuthParams()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cursor:", err)
+			return 1
+		}
+		fmt.Println("Opening browser to log in to Cursor…")
+		fmt.Println("If it doesn't open, visit:\n  " + p.LoginURL)
+		openBrowser(p.LoginURL)
+		fmt.Print("Waiting for login")
+		creds, err := cursor.Poll(p.UUID, p.Verifier, func(int) { fmt.Print(".") })
+		fmt.Println()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cursor login:", err)
+			return 1
+		}
+		if err := cursor.Save(path, creds); err != nil {
+			fmt.Fprintln(os.Stderr, "save:", err)
+			return 1
+		}
+		fmt.Println("✓ logged in — token saved to", path)
+		return 0
+	case "status":
+		if !cursor.LoggedIn(path) {
+			fmt.Println("cursor: not logged in (run `jurig cursor login`)")
+			return 1
+		}
+		if _, err := cursor.ValidToken(path); err != nil {
+			fmt.Println("cursor: token invalid —", err)
+			return 1
+		}
+		fmt.Println("cursor: logged in, token valid")
+		return 0
+	case "logout":
+		_ = os.Remove(path)
+		fmt.Println("cursor: logged out")
+		return 0
+	default:
+		fmt.Println("usage: jurig cursor login|status|logout")
+		return 2
+	}
+}
+
+// openBrowser best-effort opens a URL in the default browser.
+func openBrowser(u string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", "", u)
+	case "darwin":
+		cmd = exec.Command("open", u)
+	default:
+		cmd = exec.Command("xdg-open", u)
+	}
+	_ = cmd.Start()
 }
 
 func catalogList() string {
