@@ -38,6 +38,11 @@ Available tools: %s
 5. DYNAMIC (only if in scope AND a device is available): use adb to confirm a
    device, then frida to hook the key methods (e.g. crypto/sign functions),
    dump arguments, or bypass SSL pinning. If no device, say so and stay static.
+   NETWORK CAPTURE: proxy action=start → point the device at it (adb shell
+   settings put global http_proxy HOST:PORT) + install the printed CA →
+   frida_preset ssl_unpin on the package to defeat pinning → open/drive the app
+   → proxy action=flows to read captured request/response pairs. The captured
+   traffic also streams live in the TUI's NET panel.
 6. REPORT and STOP. When the objective is met, stop calling tools and write a
    focused Markdown report: findings, evidence (file:line / method), and a short
    "next steps" list. Do not keep exploring past the goal.

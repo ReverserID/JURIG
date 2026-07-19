@@ -21,6 +21,7 @@ import (
 	"github.com/imtaqin/jurig/internal/agent"
 	"github.com/imtaqin/jurig/internal/highlight"
 	"github.com/imtaqin/jurig/internal/llm"
+	"github.com/imtaqin/jurig/internal/proxy"
 )
 
 var (
@@ -118,12 +119,18 @@ type model struct {
 	matches   []int
 	matchCur  int
 	helpOn    bool
+
+	// live MITM proxy side-panel
+	proxy   *proxy.Manager
+	panelOn bool
+	panelW  int
+	glamW   int
 }
 
 // New builds the TUI program. sessionPath is where the conversation + prompt
 // history persist; hist seeds the input history; resumed is the number of
 // restored conversation turns (0 = fresh).
-func New(ag *agent.Agent, router *llm.Router, toolStat map[string]string, sessionPath string, hist []string, resumed int, askCh chan AskReq) *tea.Program {
+func New(ag *agent.Agent, router *llm.Router, toolStat map[string]string, sessionPath string, hist []string, resumed int, askCh chan AskReq, proxyMgr *proxy.Manager) *tea.Program {
 	ti := textinput.New()
 	ti.Placeholder = "instruction (analyze ./app.apk) · Enter run · ↑/↓ history · Ctrl+O model · Ctrl+C quit"
 	ti.Focus()
@@ -147,7 +154,7 @@ func New(ag *agent.Agent, router *llm.Router, toolStat map[string]string, sessio
 		sessionPath: sessionPath, resumed: resumed,
 		hist: hist, histIdx: len(hist),
 		ti: ti, askIn: ai, searchIn: si, spin: sp, status: "idle",
-		askCh: askCh,
+		askCh: askCh, proxy: proxyMgr,
 	}
 	return tea.NewProgram(m, tea.WithAltScreen())
 }
@@ -172,19 +179,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
-		vpH := msg.Height - 10 // animated logo (5) + status (1) + borders + foot
-		if vpH < 3 {
-			vpH = 3
-		}
 		if !m.ready {
-			m.vp = viewport.New(msg.Width-2, vpH)
+			m.vp = viewport.New(msg.Width-2, msg.Height-10)
 			m.vp.SetContent(m.banner())
-			m.glam, _ = glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(msg.Width-6))
 			m.ready = true
-		} else {
-			m.vp.Width = msg.Width - 2
-			m.vp.Height = vpH
 		}
+		m.relayout()
 		m.ti.Width = msg.Width - 12
 
 	case tea.KeyMsg:
@@ -252,6 +252,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case animMsg:
 		m.frame++
+		// proxy may start/stop mid-run → re-check the split layout each tick
+		if m.ready && m.panelOn != m.wantPanel() {
+			m.relayout()
+		}
 		cmds = append(cmds, animTick())
 
 	case spinner.TickMsg:
@@ -479,7 +483,14 @@ func (m *model) View() string {
 	case m.picking:
 		inner = m.pickerMenu()
 	}
-	body := borderStyle.Width(m.w - 2).Height(m.vp.Height).Render(inner)
+	bodyW := m.w - 2
+	if m.panelOn {
+		bodyW = m.w - m.panelW - 3
+	}
+	body := borderStyle.Width(bodyW).Height(m.vp.Height).Render(inner)
+	if m.panelOn {
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, " ", m.proxyPanel(m.panelW, m.vp.Height))
+	}
 
 	var foot string
 	switch {
@@ -506,6 +517,69 @@ func (m *model) View() string {
 		foot = m.ti.View()
 	}
 	return head + "\n" + body + "\n" + foot
+}
+
+// wantPanel reports whether the proxy side-panel should be shown (proxy live
+// AND the terminal is wide enough).
+func (m *model) wantPanel() bool {
+	return m.proxy != nil && m.proxy.Running() && m.w >= 100
+}
+
+// relayout recomputes widths for the responsive transcript / proxy-panel split.
+func (m *model) relayout() {
+	if !m.ready {
+		return
+	}
+	m.panelOn = m.wantPanel()
+	m.panelW = 0
+	bodyW := m.w - 2
+	if m.panelOn {
+		m.panelW = m.w / 3
+		if m.panelW > 52 {
+			m.panelW = 52
+		}
+		if m.panelW < 32 {
+			m.panelW = 32
+		}
+		bodyW = m.w - m.panelW - 3
+	}
+	vpH := m.h - 10
+	if vpH < 3 {
+		vpH = 3
+	}
+	m.vp.Width = bodyW - 2
+	m.vp.Height = vpH
+	// rebuild the markdown renderer only when its wrap width actually changes
+	if gw := bodyW - 6; gw != m.glamW && gw > 10 {
+		m.glam, _ = glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(gw))
+		m.glamW = gw
+	}
+}
+
+// proxyPanel renders the live MITM capture side-panel.
+func (m *model) proxyPanel(w, h int) string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(" ☰ NET ") + statusStyle.Render(fmt.Sprintf(" %d flows", m.proxy.Count())) + "\n\n")
+	flows := m.proxy.Recent(h - 3)
+	if len(flows) == 0 {
+		b.WriteString(statusStyle.Render("waiting for traffic…\nset device proxy +\ninstall CA + frida unpin"))
+	}
+	for _, f := range flows {
+		st := statusStyle
+		switch {
+		case f.Status >= 500:
+			st = errStyle
+		case f.Status >= 400:
+			st = toolStyle
+		case f.Status >= 200 && f.Status < 300:
+			st = cmdStyle
+		}
+		line := fmt.Sprintf("%s %s%s", f.Method, f.Host, f.Path)
+		b.WriteString(st.Render(fmt.Sprintf("%3d", f.Status)) + " " + wrap.String(line, w-6) + "\n")
+	}
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cNeon).
+		Width(w - 2).Height(h)
+	return box.Render(b.String())
 }
 
 // tokenTag shows cumulative token usage in the header when available.

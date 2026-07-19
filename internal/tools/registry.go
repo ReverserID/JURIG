@@ -41,6 +41,7 @@ func NewRegistry() *Registry {
 		&FridaTool{},
 		&FridaPresetTool{},
 		&FridaPsTool{},
+		&ProxyTool{},
 		&HTTPRequestTool{},
 		&DownloadTool{},
 	)

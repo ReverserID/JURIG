@@ -143,8 +143,15 @@ syntax-highlighted preview — the model still receives the full file.
 | `frida_ps` | list device apps/processes |
 | `frida` | run a custom Frida JS script |
 | `frida_preset` | built-in: `ssl_unpin`, `list_classes`, `dump_class`, `hook`, `trace_http` |
+| `proxy` | native Go MITM proxy (goproxy) — capture live HTTPS traffic |
 | `http_request` | replay/test discovered API endpoints |
 | `download` | fetch a URL to the work dir |
+
+**Live network capture:** `proxy start` spins up an in-process MITM proxy and
+exports a CA. The agent points the device at it (adb) + installs the CA + runs
+`frida_preset ssl_unpin`, then reads flows with `proxy flows`. Captured
+requests/responses stream live in a **NET side-panel** in the TUI (shown when
+the terminal is wide enough — the layout is fully responsive).
 
 **Filesystem / shell:** `read_file`, `write_file`, `list_dir`, `shell` (PowerShell default on Windows).
 

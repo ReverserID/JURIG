@@ -23,6 +23,17 @@ type Env struct {
 	// Ask poses a question to the human operator and blocks for the answer.
 	// options is an optional shortlist of suggested answers. Nil in headless.
 	Ask func(question string, options []string) string
+	// Proxy controls the native MITM capture proxy (nil if unavailable).
+	Proxy ProxyController
+}
+
+// ProxyController is the MITM proxy surface the proxy tool drives.
+type ProxyController interface {
+	Start(port int) (addr, caPath string, err error)
+	Stop() error
+	Running() bool
+	Count() int
+	FlowsText(n int) string
 }
 
 func (e *Env) emit(kind, msg string) {

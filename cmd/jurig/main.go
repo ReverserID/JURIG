@@ -14,6 +14,7 @@ import (
 	"github.com/imtaqin/jurig/internal/config"
 	"github.com/imtaqin/jurig/internal/llm"
 	"github.com/imtaqin/jurig/internal/portable"
+	"github.com/imtaqin/jurig/internal/proxy"
 	"github.com/imtaqin/jurig/internal/tools"
 	"github.com/imtaqin/jurig/internal/tui"
 )
@@ -71,7 +72,8 @@ func main() {
 	}
 	_ = os.MkdirAll(workDir, 0o755)
 
-	env := &tools.Env{WorkDir: workDir}
+	proxyMgr := proxy.New(filepath.Join(workDir, "proxy"))
+	env := &tools.Env{WorkDir: workDir, Proxy: proxyMgr}
 	// Contextual toolchain: when the agent calls a tool whose binary is
 	// missing but auto-installable, fetch it on demand and stream progress.
 	env.ResolveBin = func(name string) (string, error) {
@@ -112,7 +114,7 @@ func main() {
 		return <-r.Reply
 	}
 
-	prog := tui.New(ag, router, pm.Status(), sessionPath, histInit, resumed, askCh)
+	prog := tui.New(ag, router, pm.Status(), sessionPath, histInit, resumed, askCh, proxyMgr)
 	if _, err := prog.Run(); err != nil {
 		die("tui: %v", err)
 	}
