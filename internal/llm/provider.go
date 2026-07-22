@@ -151,3 +151,13 @@ func (r *Router) Catalog() []Choice {
 	})
 	return out
 }
+
+// ReplaceProviders swaps in a rebuilt router's providers + readiness without
+// copying the mutex. Used when an API key is set from the TUI at runtime.
+func (r *Router) ReplaceProviders(new *Router) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.providers = new.providers
+	r.ready = new.ready
+	r.cfg = new.cfg
+}

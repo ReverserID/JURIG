@@ -19,6 +19,7 @@ import (
 	"github.com/muesli/reflow/wrap"
 
 	"github.com/imtaqin/jurig/internal/agent"
+	"github.com/imtaqin/jurig/internal/config"
 	"github.com/imtaqin/jurig/internal/highlight"
 	"github.com/imtaqin/jurig/internal/llm"
 	"github.com/imtaqin/jurig/internal/proxy"
@@ -112,6 +113,12 @@ type model struct {
 	choices []llm.Choice
 	pcursor int
 
+	// key prompt (shown when a provider needs a key)
+	keyPrompt   bool
+	keyInput    textinput.Model
+	keyForProv  string // provider name waiting for key
+	keyForModel string // model to auto-select after key is set
+
 	// transcript search + help overlay
 	searching bool
 	searchIn  textinput.Model
@@ -125,12 +132,16 @@ type model struct {
 	panelOn bool
 	panelW  int
 	glamW   int
+
+	// config persistence (for saving API keys from TUI)
+	cfg     *config.Config
+	cfgPath string
 }
 
 // New builds the TUI program. sessionPath is where the conversation + prompt
 // history persist; hist seeds the input history; resumed is the number of
 // restored conversation turns (0 = fresh).
-func New(ag *agent.Agent, router *llm.Router, toolStat map[string]string, sessionPath string, hist []string, resumed int, askCh chan AskReq, proxyMgr *proxy.Manager) *tea.Program {
+func New(ag *agent.Agent, router *llm.Router, toolStat map[string]string, sessionPath string, hist []string, resumed int, askCh chan AskReq, proxyMgr *proxy.Manager, cfg *config.Config, cfgPath string) *tea.Program {
 	ti := textinput.New()
 	ti.Placeholder = "instruction or /command (/model /clear /doctor /help) · Enter run · ↑/↓ history"
 	ti.Focus()
@@ -145,6 +156,12 @@ func New(ag *agent.Agent, router *llm.Router, toolStat map[string]string, sessio
 	si.CharLimit = 0
 	si.Prompt = neonStyle.Render("/")
 
+	ki := textinput.New()
+	ki.CharLimit = 0
+	ki.EchoMode = textinput.EchoPassword
+	ki.EchoCharacter = '•'
+	ki.Prompt = neonStyle.Render("key› ")
+
 	sp := spinner.New()
 	sp.Spinner = spinner.Points
 	sp.Style = neonStyle
@@ -153,18 +170,14 @@ func New(ag *agent.Agent, router *llm.Router, toolStat map[string]string, sessio
 		ag: ag, router: router, toolStat: toolStat,
 		sessionPath: sessionPath, resumed: resumed,
 		hist: hist, histIdx: len(hist),
-		ti: ti, askIn: ai, searchIn: si, spin: sp, status: "idle",
-		askCh: askCh, proxy: proxyMgr,
+		ti: ti, askIn: ai, searchIn: si, keyInput: ki, spin: sp, status: "idle",
+		askCh: askCh, proxy: proxyMgr, cfg: cfg, cfgPath: cfgPath,
 	}
 	return tea.NewProgram(m, tea.WithAltScreen())
 }
 
 func (m *model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, m.spin.Tick, animTick()}
-	if m.askCh != nil {
-		cmds = append(cmds, m.waitAsk())
-	}
-	return tea.Batch(cmds...)
+	return tea.Batch(textinput.Blink, m.spin.Tick, animTick(), m.waitAsk())
 }
 
 // waitAsk blocks for the next agent question.
@@ -190,6 +203,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.picking {
 			return m, m.updatePicker(msg)
+		}
+		if m.keyPrompt {
+			return m, m.handleKeyPrompt(msg)
 		}
 		if m.asking {
 			return m, m.updateAsk(msg)
@@ -300,6 +316,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch {
 	case m.asking:
 		m.askIn, cmd = m.askIn.Update(msg)
+	case m.keyPrompt:
+		m.keyInput, cmd = m.keyInput.Update(msg)
 	case m.searching:
 		m.searchIn, cmd = m.searchIn.Update(msg)
 	default:
@@ -496,6 +514,8 @@ func (m *model) View() string {
 	switch {
 	case m.helpOn:
 		inner = m.helpView()
+	case m.keyPrompt:
+		inner = m.keyPromptView()
 	case m.asking && len(m.askReq.Options) > 0:
 		inner = m.askMenu()
 	case m.picking:
@@ -512,6 +532,8 @@ func (m *model) View() string {
 
 	var foot string
 	switch {
+	case m.keyPrompt:
+		foot = neonStyle.Render("key› ") + statusStyle.Render("paste API key · Enter save · Esc cancel")
 	case m.searching:
 		hint := "  Enter search · Esc close"
 		if m.lastQuery != "" {
@@ -736,6 +758,12 @@ func (m *model) updatePicker(msg tea.KeyMsg) tea.Cmd {
 	case "enter":
 		if m.pcursor < len(m.choices) {
 			c := m.choices[m.pcursor]
+			if !c.Ready {
+				// Provider needs a key — prompt for it inline
+				m.picking = false
+				m.startKeyPrompt(c.Provider, c.Model)
+				return nil
+			}
 			if err := m.router.SetSelection(c.Provider, c.Model); err == nil {
 				m.appendRaw(statusStyle.Render("→ model: "+c.Provider+"/"+c.Model) + "\n")
 			}
@@ -761,6 +789,82 @@ func (m *model) pickerMenu() string {
 		}
 	}
 	return b.String()
+}
+
+// ---- key prompt (inline API key entry) ----
+
+func (m *model) startKeyPrompt(prov, model string) {
+	m.keyPrompt = true
+	m.keyForProv = prov
+	m.keyForModel = model
+	m.keyInput.Reset()
+	m.keyInput.Focus()
+}
+
+// handleKeyPrompt processes keys while the key input is active.
+func (m *model) handleKeyPrompt(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		m.keyPrompt = false
+		m.keyInput.Blur()
+		m.appendRaw(statusStyle.Render("cancelled") + "\n")
+		return nil
+	case "enter":
+		key := strings.TrimSpace(m.keyInput.Value())
+		if key == "" {
+			return nil
+		}
+		m.keyPrompt = false
+		m.keyInput.Blur()
+		return m.saveKeyAndSelect(key)
+	}
+	var cmd tea.Cmd
+	m.keyInput, cmd = m.keyInput.Update(msg)
+	return cmd
+}
+
+// saveKeyAndSelect persists the key to config, reloads the router, and selects
+// the model.
+func (m *model) saveKeyAndSelect(key string) tea.Cmd {
+	prov := m.keyForProv
+	mod := m.keyForModel
+
+	// Update the config struct in memory
+	if pc, ok := m.cfg.Providers[prov]; ok {
+		pc.APIKey = key
+		m.cfg.Providers[prov] = pc
+	}
+
+	// Save config.json so the key persists across restarts
+	if m.cfgPath != "" {
+		if err := m.cfg.Save(m.cfgPath); err != nil {
+			m.appendRaw(errStyle.Render("save config: "+err.Error()) + "\n")
+		}
+	}
+
+	// Rebuild the router so the new key takes effect
+	if newRouter, err := llm.NewRouter(m.cfg); err == nil {
+		// Update providers + readiness without copying the mutex
+		m.router.ReplaceProviders(newRouter)
+	}
+
+	// Now select the model
+	if err := m.router.SetSelection(prov, mod); err == nil {
+		m.appendRaw(cmdStyle.Render("✓ key saved") + " " + neonStyle.Render("→ "+prov+"/"+mod) + "\n\n")
+	} else {
+		m.appendRaw(errStyle.Render("select failed: "+err.Error()) + "\n")
+	}
+	return nil
+}
+
+func (m *model) keyPromptView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(" SET API KEY ") + "\n\n")
+	b.WriteString("  provider: " + neonStyle.Render(m.keyForProv) + "\n")
+	b.WriteString("  model:    " + neonStyle.Render(m.keyForModel) + "\n\n")
+	b.WriteString("  " + m.keyInput.View() + "\n\n")
+	b.WriteString(statusStyle.Render("  paste key + Enter to save · Esc cancel"))
+	return borderStyle.Width(m.innerWidth()).Render(b.String())
 }
 
 // ---- agent worker plumbing ----

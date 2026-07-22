@@ -119,7 +119,7 @@ func main() {
 		return <-r.Reply
 	}
 
-	prog := tui.New(ag, router, pm.Status(), sessionPath, histInit, resumed, askCh, proxyMgr)
+	prog := tui.New(ag, router, pm.Status(), sessionPath, histInit, resumed, askCh, proxyMgr, cfg, *cfgPath)
 	if _, err := prog.Run(); err != nil {
 		die("tui: %v", err)
 	}
