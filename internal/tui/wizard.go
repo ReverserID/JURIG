@@ -34,6 +34,7 @@ var wizardProviders = []provChoice{
 	{"openrouter", "OpenRouter — 400+ models (default)", true},
 	{"kimi", "Kimi Code — key sk-kimi- (api.kimi.com)", true},
 	{"moonshot", "Moonshot — key sk- (api.moonshot.ai)", true},
+	{"mimo", "Xiaomi MiMo (mimo-v2.5-pro, off-peak 20% off)", true},
 	{"dashscope", "Qwen / Alibaba DashScope", true},
 	{"ollama", "Ollama — local, no key", false},
 	{"anthropic", "Anthropic API — direct key", true},
@@ -334,6 +335,8 @@ func (m *wizardModel) keyHint() string {
 		return "platform.kimi.ai — key starts with sk-kimi-"
 	case "moonshot":
 		return "platform.moonshot.ai — key starts with sk- (not sk-kimi-)"
+	case "mimo":
+		return "MiMo API key (mimo.xiaomimimo.com) — set MIMO_API_KEY"
 	case "dashscope":
 		return "Alibaba Model Studio → API key (DASHSCOPE_API_KEY)"
 	case "anthropic":

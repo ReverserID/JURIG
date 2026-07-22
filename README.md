@@ -51,11 +51,14 @@ Presets shipped (`config.json` → `providers`):
 
 | Provider | Kind | Endpoint | Key env |
 |---|---|---|---|
+| **mimo** (default) | openai | token-plan-sgp.xiaomimimo.com/v1 | `MIMO_API_KEY` |
 | anthropic | anthropic | api.anthropic.com | `ANTHROPIC_API_KEY` |
 | **openrouter** | openai | openrouter.ai/api/v1 | `OPENROUTER_API_KEY` |
 | **ollama** (local) | openai | localhost:11434/v1 | — (local) |
-| **moonshot / Kimi** | openai | api.moonshot.ai/v1 | `MOONSHOT_API_KEY` |
+| **kimi** | openai | api.kimi.com/coding/v1 | `KIMI_API_KEY` |
+| **moonshot** | openai | api.moonshot.ai/v1 | `MOONSHOT_API_KEY` |
 | **dashscope / Qwen** (Alibaba) | openai | dashscope-intl…/compatible-mode/v1 | `DASHSCOPE_API_KEY` |
+| cursor (subscription) | openai | cursor-openai-api bridge | — (browser auth) |
 | claude-cli (subscription) | claude-cli | `claude` binary | — |
 
 Pick provider+model **live in the TUI with Ctrl+O**, or set

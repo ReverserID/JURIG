@@ -47,7 +47,7 @@ func Default() *Config {
 	home, _ := os.UserHomeDir()
 	root := filepath.Join(home, ".jurig")
 	return &Config{
-		Active: Selection{Provider: "openrouter", Model: "anthropic/claude-fable-5"},
+		Active: Selection{Provider: "mimo", Model: "mimo-v2.5-pro"},
 		Providers: map[string]ProviderCfg{
 			"anthropic": {
 				Kind:    KindAnthropic,
@@ -92,6 +92,20 @@ func Default() *Config {
 				BaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 				KeyEnv:  "DASHSCOPE_API_KEY",
 				Models:  []string{"qwen3-max", "qwen3-coder-plus", "qwen-max", "qwen-plus"},
+			},
+			"mimo": {
+				// Xiaomi MiMo — OpenAI-compat endpoint, dedicated API key.
+				Kind:    KindOpenAI,
+				BaseURL: "https://token-plan-sgp.xiaomimimo.com/v1",
+				KeyEnv:  "MIMO_API_KEY",
+				Models: []string{
+					"mimo-v2.5-pro",
+					"mimo-v2.5",
+					"mimo-v2.5-asr",
+					"mimo-v2.5-tts-voiceclone",
+					"mimo-v2.5-tts-voicedesign",
+					"mimo-v2.5-tts",
+				},
 			},
 			"cursor": {
 				// Cursor subscription via the cursor-openai-api bridge (default
