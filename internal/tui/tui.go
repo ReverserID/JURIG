@@ -132,7 +132,7 @@ type model struct {
 // restored conversation turns (0 = fresh).
 func New(ag *agent.Agent, router *llm.Router, toolStat map[string]string, sessionPath string, hist []string, resumed int, askCh chan AskReq, proxyMgr *proxy.Manager) *tea.Program {
 	ti := textinput.New()
-	ti.Placeholder = "instruction (analyze ./app.apk) · Enter run · ↑/↓ history · Ctrl+O model · Ctrl+C quit"
+	ti.Placeholder = "instruction or /command (/model /clear /doctor /help) · Enter run · ↑/↓ history"
 	ti.Focus()
 	ti.CharLimit = 0
 	ti.Prompt = userStyle.Render("jurig› ")
@@ -224,12 +224,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			if !m.running && strings.TrimSpace(m.ti.Value()) != "" {
-				task := strings.TrimSpace(m.ti.Value())
+				input := strings.TrimSpace(m.ti.Value())
 				m.ti.Reset()
-				m.hist = append(m.hist, task)
-				m.histIdx = len(m.hist)
-				m.appendRaw(userStyle.Render("▸ you: ") + m.wrapText(task) + "\n\n")
-				cmds = append(cmds, m.startRun(task))
+				if strings.HasPrefix(input, "/") {
+					cmds = append(cmds, m.execSlash(input))
+				} else {
+					m.hist = append(m.hist, input)
+					m.histIdx = len(m.hist)
+					m.appendRaw(userStyle.Render("▸ you: ") + m.wrapText(input) + "\n\n")
+					cmds = append(cmds, m.startRun(input))
+				}
 			}
 		case "up":
 			if !m.running {
@@ -420,6 +424,12 @@ func (m *model) updateAsk(msg tea.KeyMsg) tea.Cmd {
 
 // helpView lists keybindings (toggled with F1).
 func (m *model) helpView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(" SLASH COMMANDS ") + "\n\n")
+	for _, c := range slashCommands {
+		b.WriteString("  " + neonStyle.Render(fmt.Sprintf("%-10s", c.cmd)) + statusStyle.Render(c.desc) + "\n")
+	}
+	b.WriteString("\n" + titleStyle.Render(" KEYBINDINGS ") + "\n\n")
 	rows := [][2]string{
 		{"Enter", "run instruction / submit"},
 		{"↑ / ↓", "prompt history"},
@@ -429,14 +439,11 @@ func (m *model) helpView() string {
 		{"Esc", "interrupt the running agent (then steer it)"},
 		{"F1", "toggle this help"},
 		{"Ctrl+C", "quit"},
-		{"answer menu", "↑/↓ move · Space or 1-9 toggle · Enter confirm"},
 	}
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(" KEYBINDINGS ") + "\n\n")
 	for _, r := range rows {
-		b.WriteString("  " + neonStyle.Render(fmt.Sprintf("%-14s", r[0])) + statusStyle.Render(r[1]) + "\n")
+		b.WriteString("  " + neonStyle.Render(fmt.Sprintf("%-10s", r[0])) + statusStyle.Render(r[1]) + "\n")
 	}
-	b.WriteString("\n" + statusStyle.Render("press F1 to close"))
+	b.WriteString("\n" + statusStyle.Render("press F1 or /help to close"))
 	return b.String()
 }
 
@@ -591,6 +598,104 @@ func (m *model) proxyPanel(w, h int) string {
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cNeon).
 		Width(w - 2).Height(h)
 	return box.Render(b.String())
+}
+
+// ---- slash commands (Claude Code style) ----
+
+var slashCommands = []struct {
+	cmd  string
+	args string
+	desc string
+}{
+	{"/model", "", "switch provider + model (opens picker)"},
+	{"/m", "", "alias for /model"},
+	{"/clear", "", "clear transcript"},
+	{"/doctor", "", "show provider + toolchain status"},
+	{"/session", "", "show session info (turns, tokens)"},
+	{"/fresh", "", "start a fresh session (discard history)"},
+	{"/help", "", "toggle help overlay (same as F1)"},
+	{"/quit", "", "quit jurig"},
+}
+
+// execSlash handles a `/command` input. Returns a tea.Cmd if needed.
+func (m *model) execSlash(input string) tea.Cmd {
+	parts := strings.Fields(input)
+	cmd := strings.ToLower(parts[0])
+
+	switch cmd {
+	case "/model", "/m":
+		m.openPicker()
+		return nil
+
+	case "/clear":
+		m.buf.Reset()
+		m.vp.SetContent(m.banner())
+		m.vp.GotoTop()
+		return nil
+
+	case "/doctor":
+		sel := m.router.ActiveLabel()
+		prov := m.router.ProviderName()
+		var b strings.Builder
+		b.WriteString(titleStyle.Render(" DOCTOR ") + "\n\n")
+		b.WriteString("  active:   " + neonStyle.Render(sel) + "\n")
+		b.WriteString("  provider: " + statusStyle.Render(prov) + "\n")
+		b.WriteString("  tools:\n")
+		for name, path := range m.toolStat {
+			mark := cmdStyle.Render("✓")
+			if path == "MISSING" {
+				mark = errStyle.Render("✗")
+			}
+			b.WriteString(fmt.Sprintf("    %s %-9s %s\n", mark, name, statusStyle.Render(path)))
+		}
+		if m.tokIn+m.tokOut > 0 {
+			b.WriteString(fmt.Sprintf("\n  tokens:   %dk in / %dk out\n", m.tokIn/1000, m.tokOut/1000))
+		}
+		b.WriteString("\n")
+		m.appendRaw(b.String())
+		return nil
+
+	case "/session":
+		turns := m.ag.Turns()
+		var b strings.Builder
+		b.WriteString(titleStyle.Render(" SESSION ") + "\n\n")
+		b.WriteString(fmt.Sprintf("  turns:    %d\n", turns))
+		b.WriteString(fmt.Sprintf("  prompts:  %d\n", len(m.hist)))
+		if m.tokIn+m.tokOut > 0 {
+			b.WriteString(fmt.Sprintf("  tokens:   %dk in / %dk out\n", m.tokIn/1000, m.tokOut/1000))
+		}
+		if m.sessionPath != "" {
+			b.WriteString("  saved:    " + statusStyle.Render(m.sessionPath) + "\n")
+		}
+		b.WriteString("\n")
+		m.appendRaw(b.String())
+		return nil
+
+	case "/fresh":
+		m.ag.Reset()
+		m.buf.Reset()
+		m.hist = nil
+		m.histIdx = 0
+		m.tokIn, m.tokOut = 0, 0
+		m.resumed = 0
+		m.vp.SetContent(m.banner())
+		m.vp.GotoTop()
+		m.appendRaw(neonStyle.Render("↻ fresh session") + "\n\n")
+		return nil
+
+	case "/help":
+		m.helpOn = !m.helpOn
+		return nil
+
+	case "/quit":
+		return tea.Quit
+
+	default:
+		// unknown slash command — show hint
+		m.appendRaw(errStyle.Render("unknown command: "+cmd) + "\n")
+		m.appendRaw(statusStyle.Render("available: ") + neonStyle.Render("/model /clear /doctor /session /fresh /help /quit") + "\n\n")
+		return nil
+	}
 }
 
 // tokenTag shows cumulative token usage in the header when available.
