@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,10 @@ type openAIProvider struct {
 	baseURL string
 	apiKey  string
 	hc      *http.Client
+
+	mu     sync.RWMutex
+	maxOut map[string]int // model id → max_output_tokens (from /models)
+	ctxLen map[string]int // model id → context_length (from /models)
 }
 
 // NewOpenAI builds an OpenAI-compatible provider.
@@ -32,6 +37,88 @@ func NewOpenAI(name, baseURL, apiKey string) Provider {
 }
 
 func (p *openAIProvider) Name() string { return p.name }
+
+// NewOpenAILister builds an OpenAI-compatible client exposing ListModels, for
+// probing an endpoint's catalog before it is wired into the router (e.g. the
+// setup wizard).
+func NewOpenAILister(name, baseURL, apiKey string) ModelLister {
+	return &openAIProvider{name: name, baseURL: baseURL, apiKey: apiKey, hc: &http.Client{Timeout: 20 * time.Second}}
+}
+
+// ListModels fetches available model ids from the provider's GET /models
+// endpoint (OpenAI-compatible). Works for OpenRouter, Ollama, and local
+// gateways like 9router / OmniRoute.
+func (p *openAIProvider) ListModels(ctx context.Context) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+	resp, err := p.hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s models: %w", p.name, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s http %d: %s", p.name, resp.StatusCode, truncate(string(raw), 300))
+	}
+	var out struct {
+		Data []struct {
+			ID              string `json:"id"`
+			ContextLength   int    `json:"context_length"`
+			MaxInputTokens  int    `json:"max_input_tokens"`
+			MaxOutputTokens int    `json:"max_output_tokens"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("%s models decode: %w", p.name, err)
+	}
+	ids := make([]string, 0, len(out.Data))
+	maxOut := make(map[string]int, len(out.Data))
+	ctxLen := make(map[string]int, len(out.Data))
+	for _, d := range out.Data {
+		if d.ID == "" {
+			continue
+		}
+		ids = append(ids, d.ID)
+		if d.MaxOutputTokens > 0 {
+			maxOut[d.ID] = d.MaxOutputTokens
+		}
+		cl := d.ContextLength
+		if cl == 0 {
+			cl = d.MaxInputTokens
+		}
+		if cl > 0 {
+			ctxLen[d.ID] = cl
+		}
+	}
+	p.mu.Lock()
+	p.maxOut, p.ctxLen = maxOut, ctxLen
+	p.mu.Unlock()
+	return ids, nil
+}
+
+// maxOutTokensCeiling caps an endpoint-reported max_output_tokens: many
+// gateways advertise huge values (e.g. 384000) that waste budget or get
+// rejected. 32768 is generous for RE reports while staying safe.
+const maxOutTokensCeiling = 32768
+
+// MaxOutput returns the detected max output tokens for a model (0 if unknown),
+// clamped to a sane ceiling.
+func (p *openAIProvider) MaxOutput(model string) int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	n := p.maxOut[model]
+	if n > maxOutTokensCeiling {
+		return maxOutTokensCeiling
+	}
+	return n
+}
 
 // ---- wire types (OpenAI) ----
 

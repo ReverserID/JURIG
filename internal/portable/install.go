@@ -12,15 +12,25 @@ import (
 	"time"
 )
 
-// CatalogEntry describes a downloadable portable tool.
+// CatalogEntry describes a downloadable portable tool. URL is the default
+// (OS-independent) archive; URLs overrides it per runtime.GOOS when a tool
+// ships OS-specific binaries.
 type CatalogEntry struct {
 	Name string
-	URL  string // zip archive
+	URL  string            // default zip/jar archive
+	URLs map[string]string // per-GOOS override ("windows"/"linux"/"darwin")
 	Note string
 }
 
-// Catalog holds known auto-installable tools. Heavy tools (ghidra) are
-// listed for reference but installed by the user due to size/licensing.
+// resolveURL picks the archive URL for the current OS.
+func (e CatalogEntry) resolveURL() string {
+	if u, ok := e.URLs[runtime.GOOS]; ok && u != "" {
+		return u
+	}
+	return e.URL
+}
+
+// Catalog holds known auto-installable tools.
 var Catalog = map[string]CatalogEntry{
 	"jadx": {
 		Name: "jadx",
@@ -34,10 +44,26 @@ var Catalog = map[string]CatalogEntry{
 		URL:  "https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar",
 		Note: "APK resource+smali decoder (jar; wrapper script required)",
 	},
+	"radare2": {
+		Name: "radare2",
+		URLs: map[string]string{
+			"windows": "https://github.com/radareorg/radare2/releases/download/6.0.0/radare2-6.0.0-w64.zip",
+		},
+		Note: "Native binary static analysis (ELF/PE/Mach-O). Windows auto-installs; on Linux/macOS install via package manager or `r2pm`.",
+	},
 	"ghidra": {
 		Name: "ghidra",
-		URL:  "https://github.com/NationalSecurityAgency/ghidra/releases",
-		Note: "Install manually (large). Point tools_dir/ghidra at the release, analyzeHeadless is auto-detected.",
+		// Universal (Java) — one zip for every OS. Needs a JDK 21+ on PATH.
+		URL:  "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.3.2_build/ghidra_11.3.2_PUBLIC_20250415.zip",
+		Note: "Ghidra headless (analyzeHeadless). ~450MB, needs JDK 21+.",
+	},
+	"objdump": {
+		Name: "objdump",
+		URLs: map[string]string{
+			"windows": "https://github.com/mstorsjo/llvm-mingw/releases/download/20250114/llvm-mingw-20250114-ucrt-x86_64.zip",
+			"linux":   "https://github.com/mstorsjo/llvm-mingw/releases/download/20250114/llvm-mingw-20250114-ucrt-ubuntu-20.04-x86_64.tar.xz",
+		},
+		Note: "GNU/LLVM objdump (disassembly + headers). Windows auto-installs llvm-objdump; on Linux/macOS use binutils.",
 	},
 }
 
@@ -53,7 +79,8 @@ func AutoInstallable(name string) bool {
 	if !ok {
 		return false
 	}
-	return strings.HasSuffix(e.URL, ".zip") || strings.HasSuffix(e.URL, ".jar")
+	u := e.resolveURL()
+	return strings.HasSuffix(u, ".zip") || strings.HasSuffix(u, ".jar")
 }
 
 // ResolveOrInstall resolves name, and if missing but auto-installable from
@@ -67,7 +94,7 @@ func (m *Manager) ResolveOrInstall(name string, progress func(string)) (string, 
 		// Not auto-installable → surface the original resolve error + hint.
 		_, err := m.Resolve(name)
 		if e, ok := Catalog[name]; ok {
-			return "", fmt.Errorf("%v (manual install: %s — %s)", err, e.URL, e.Note)
+			return "", fmt.Errorf("%v (manual install: %s — %s)", err, e.resolveURL(), e.Note)
 		}
 		return "", err
 	}
@@ -87,6 +114,7 @@ func (m *Manager) Install(name string, progress func(string)) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("no catalog entry for %q", name)
 	}
+	url := entry.resolveURL()
 	dest := filepath.Join(m.toolsDir, name)
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return "", err
@@ -98,10 +126,10 @@ func (m *Manager) Install(name string, progress func(string)) (string, error) {
 	}
 
 	switch {
-	case strings.HasSuffix(entry.URL, ".zip"):
-		log("downloading " + entry.URL + " …")
+	case strings.HasSuffix(url, ".zip"):
+		log("downloading " + url + " …")
 		tmp := filepath.Join(m.toolsDir, name+".zip")
-		if err := download(entry.URL, tmp); err != nil {
+		if err := download(url, tmp); err != nil {
 			return "", err
 		}
 		defer os.Remove(tmp)
@@ -110,10 +138,10 @@ func (m *Manager) Install(name string, progress func(string)) (string, error) {
 			return "", err
 		}
 
-	case strings.HasSuffix(entry.URL, ".jar"):
-		log("downloading " + entry.URL + " …")
+	case strings.HasSuffix(url, ".jar"):
+		log("downloading " + url + " …")
 		jar := filepath.Join(dest, name+".jar")
-		if err := download(entry.URL, jar); err != nil {
+		if err := download(url, jar); err != nil {
 			return "", err
 		}
 		if err := writeJarWrapper(dest, name, jar); err != nil {
@@ -121,7 +149,7 @@ func (m *Manager) Install(name string, progress func(string)) (string, error) {
 		}
 
 	default:
-		return "", fmt.Errorf("%s must be installed manually: %s (%s)", name, entry.URL, entry.Note)
+		return "", fmt.Errorf("%s must be installed manually: %s (%s)", name, url, entry.Note)
 	}
 
 	log("installed to " + dest)

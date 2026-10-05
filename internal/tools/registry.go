@@ -34,6 +34,7 @@ func NewRegistry() *Registry {
 		&PeInfoTool{},
 		&NativeLibsTool{},
 		&Radare2Tool{},
+		&ObjdumpTool{},
 		&GhidraTool{},
 		&JadxTool{},
 		&ApktoolTool{},

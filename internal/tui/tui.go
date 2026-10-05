@@ -47,8 +47,12 @@ var (
 // toolGlyph tags each tool with a console glyph for the hacker aesthetic.
 var toolGlyph = map[string]string{
 	"shell": "»", "unzip": "⇲", "read_file": "▤", "write_file": "✎",
-	"list_dir": "▦", "strings": "≣", "radare2": "⌗", "jadx": "⬡",
-	"apktool": "⬢", "adb": "▮", "frida": "☰",
+	"list_dir": "▦", "strings": "≣", "search_code": "⌕", "secret_scan": "⚿",
+	"url_extract": "🜛", "manifest": "𝍌", "ask_user": "?", "hexdump": "⬚",
+	"elf_info": "⬣", "pe_info": "⊞", "native_libs": "⬡", "radare2": "⌗",
+	"ghidra": "🐉", "jadx": "⬢", "apktool": "▩", "adb": "▮",
+	"frida": "☰", "frida_preset": "☷", "frida_ps": "▤", "proxy": "⇄",
+	"http_request": "↯", "download": "⭳",
 }
 
 func glyph(tool string) string {
@@ -136,6 +140,16 @@ type model struct {
 	// config persistence (for saving API keys from TUI)
 	cfg     *config.Config
 	cfgPath string
+
+	// wantSetup: /setup quits the TUI so main can re-run the setup wizard.
+	wantSetup bool
+}
+
+// WantsSetup reports whether the TUI quit via /setup (main should re-run the
+// wizard, reload config, then relaunch).
+func WantsSetup(fm tea.Model) bool {
+	m, ok := fm.(*model)
+	return ok && m.wantSetup
 }
 
 // New builds the TUI program. sessionPath is where the conversation + prompt
@@ -143,7 +157,7 @@ type model struct {
 // restored conversation turns (0 = fresh).
 func New(ag *agent.Agent, router *llm.Router, toolStat map[string]string, sessionPath string, hist []string, resumed int, askCh chan AskReq, proxyMgr *proxy.Manager, cfg *config.Config, cfgPath string) *tea.Program {
 	ti := textinput.New()
-	ti.Placeholder = "instruction or /command (/model /clear /doctor /help) · Enter run · ↑/↓ history"
+	ti.Placeholder = "instruction or /command (/model /setup /clear /doctor /help) · Enter run · ↑/↓ history"
 	ti.Focus()
 	ti.CharLimit = 0
 	ti.Prompt = userStyle.Render("jurig› ")
@@ -190,10 +204,33 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case modelsFetchedMsg:
+		if msg.err != nil {
+			m.status = "idle"
+			m.appendRaw(errStyle.Render("models "+msg.provider+": "+msg.err.Error()) + "\n")
+		} else {
+			m.status = "idle"
+			if m.picking {
+				// Rebuild the catalog in place, keeping the cursor on the same row.
+				cur := ""
+				if m.pcursor < len(m.choices) {
+					cur = m.choices[m.pcursor].Provider + "/" + m.choices[m.pcursor].Model
+				}
+				m.choices = m.router.Catalog()
+				for i, c := range m.choices {
+					if c.Provider+"/"+c.Model == cur {
+						m.pcursor = i
+						break
+					}
+				}
+			}
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 		if !m.ready {
-			m.vp = viewport.New(msg.Width-2, msg.Height-10)
+			m.vp = viewport.New(msg.Width-2, msg.Height-12)
 			m.vp.SetContent(m.banner())
 			m.ready = true
 		}
@@ -227,8 +264,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "ctrl+o":
-			m.openPicker()
-			return m, nil
+			return m, m.openPicker()
 		case "ctrl+f":
 			m.searching = true
 			m.searchIn.Reset()
@@ -505,8 +541,7 @@ func (m *model) View() string {
 	}
 	// Persistent animated ghost header (stays pinned; transcript scrolls below).
 	logo := m.renderLogo()
-	head := logo + "\n" +
-		statusStyle.Render(fmt.Sprintf("  %s · %s%s · F1 help", m.router.ActiveLabel(), m.status, m.tokenTag()))
+	head := logo + "\n" + m.statusBar()
 
 	// Overlays render in the fixed-height body area so tall menus never break
 	// the layout; the footer stays a single hint/input line.
@@ -583,7 +618,8 @@ func (m *model) relayout() {
 		}
 		bodyW = m.w - m.panelW - 3
 	}
-	vpH := m.h - 10
+	// header is logo(5) + scanline(1) + tag(1) + status bar(1) + borders/footer.
+	vpH := m.h - 12
 	if vpH < 3 {
 		vpH = 3
 	}
@@ -631,6 +667,7 @@ var slashCommands = []struct {
 }{
 	{"/model", "", "switch provider + model (opens picker)"},
 	{"/m", "", "alias for /model"},
+	{"/setup", "", "re-run the setup wizard (provider, model, tools)"},
 	{"/clear", "", "clear transcript"},
 	{"/doctor", "", "show provider + toolchain status"},
 	{"/session", "", "show session info (turns, tokens)"},
@@ -646,8 +683,12 @@ func (m *model) execSlash(input string) tea.Cmd {
 
 	switch cmd {
 	case "/model", "/m":
-		m.openPicker()
-		return nil
+		return m.openPicker()
+
+	case "/setup":
+		// Quit the TUI; main re-runs the wizard, reloads config, relaunches.
+		m.wantSetup = true
+		return tea.Quit
 
 	case "/clear":
 		m.buf.Reset()
@@ -715,7 +756,7 @@ func (m *model) execSlash(input string) tea.Cmd {
 	default:
 		// unknown slash command — show hint
 		m.appendRaw(errStyle.Render("unknown command: "+cmd) + "\n")
-		m.appendRaw(statusStyle.Render("available: ") + neonStyle.Render("/model /clear /doctor /session /fresh /help /quit") + "\n\n")
+		m.appendRaw(statusStyle.Render("available: ") + neonStyle.Render("/model /setup /clear /doctor /session /fresh /help /quit") + "\n\n")
 		return nil
 	}
 }
@@ -728,9 +769,64 @@ func (m *model) tokenTag() string {
 	return fmt.Sprintf(" · %dk↑ %dk↓", m.tokIn/1000, m.tokOut/1000)
 }
 
+// segment styles for the header status bar (powerline-ish key/value chips).
+var (
+	segState = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0B0F14")).Background(cNeon).Padding(0, 1)
+	segBusy  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0B0F14")).Background(cYellow).Padding(0, 1)
+	segKey   = lipgloss.NewStyle().Bold(true).Foreground(cDim)
+	segVal   = lipgloss.NewStyle().Foreground(cNeon)
+)
+
+// pulseDots cycles a small glyph to give the state chip a heartbeat.
+var pulseDots = []string{"●", "◉", "◍", "◉"}
+
+// statusBar renders a compact, segmented operator status line under the logo.
+func (m *model) statusBar() string {
+	dot := pulseDots[(m.frame/2)%len(pulseDots)]
+	state := segState.Render(dot + " IDLE")
+	if m.running {
+		state = segBusy.Render(m.spin.View() + " BUSY")
+	}
+	seg := func(k, v string) string {
+		if v == "" {
+			return ""
+		}
+		return "  " + segKey.Render(k+" ") + segVal.Render(v)
+	}
+	st := m.status
+	if st == "" {
+		st = "ready"
+	}
+	toks := ""
+	if m.tokIn+m.tokOut > 0 {
+		toks = fmt.Sprintf("%dk↑ %dk↓", m.tokIn/1000, m.tokOut/1000)
+	}
+	bar := state +
+		seg("llm", m.router.ActiveLabel()) +
+		seg("step", st) +
+		seg("tok", toks) +
+		"  " + statusStyle.Render("F1 help")
+	return bar
+}
+
 // ---- model picker ----
 
-func (m *model) openPicker() {
+// modelsFetchedMsg carries a live /models result back to the picker.
+type modelsFetchedMsg struct {
+	provider string
+	models   []string
+	err      error
+}
+
+// fetchModelsCmd pulls a provider's catalog live (off the UI goroutine).
+func (m *model) fetchModelsCmd(provider string) tea.Cmd {
+	return func() tea.Msg {
+		models, err := m.router.FetchModels(context.Background(), provider)
+		return modelsFetchedMsg{provider: provider, models: models, err: err}
+	}
+}
+
+func (m *model) openPicker() tea.Cmd {
 	m.choices = m.router.Catalog()
 	m.picking = true
 	m.pcursor = 0
@@ -741,6 +837,16 @@ func (m *model) openPicker() {
 			break
 		}
 	}
+	// Auto-refresh model lists for providers marked auto_models (e.g. 9router,
+	// omniroute) so the picker shows what the gateway actually serves.
+	var cmds []tea.Cmd
+	for _, p := range m.router.AutoModelProviders() {
+		cmds = append(cmds, m.fetchModelsCmd(p))
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *model) updatePicker(msg tea.KeyMsg) tea.Cmd {
@@ -754,6 +860,15 @@ func (m *model) updatePicker(msg tea.KeyMsg) tea.Cmd {
 	case "down", "ctrl+n":
 		if m.pcursor < len(m.choices)-1 {
 			m.pcursor++
+		}
+	case "r":
+		// Refresh the highlighted provider's model list from its /models endpoint.
+		if m.pcursor < len(m.choices) {
+			prov := m.choices[m.pcursor].Provider
+			if m.router.CanListModels(prov) {
+				m.status = "fetching " + prov + " models…"
+				return m.fetchModelsCmd(prov)
+			}
 		}
 	case "enter":
 		if m.pcursor < len(m.choices) {
@@ -775,19 +890,42 @@ func (m *model) updatePicker(msg tea.KeyMsg) tea.Cmd {
 
 func (m *model) pickerMenu() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render(" SELECT MODEL ") + statusStyle.Render("  ↑/↓ · Enter apply · Esc cancel") + "\n\n")
-	for i, c := range m.choices {
+	b.WriteString(titleStyle.Render(" SELECT MODEL ") + statusStyle.Render("  ↑/↓ · Enter apply · r refresh list · Esc cancel") + "\n\n")
+
+	// Window the list to the body height so long catalogs scroll instead of
+	// overflowing. Reserve rows for title + hints.
+	rows := m.vp.Height - 5
+	if rows < 4 {
+		rows = 4
+	}
+	n := len(m.choices)
+	start := 0
+	if m.pcursor >= rows {
+		start = m.pcursor - rows + 1
+	}
+	end := start + rows
+	if end > n {
+		end = n
+	}
+	if start > 0 {
+		b.WriteString(statusStyle.Render(fmt.Sprintf("  ↑ %d more", start)) + "\n")
+	}
+	for i := start; i < end; i++ {
+		c := m.choices[i]
 		line := c.Provider + "/" + c.Model
-		if i == m.pcursor {
+		switch {
+		case i == m.pcursor:
 			b.WriteString(selStyle.Render("› "+line) + "\n")
-			continue
-		}
-		if c.Ready {
+		case c.Ready:
 			b.WriteString("  " + line + "\n")
-		} else {
+		default:
 			b.WriteString(statusStyle.Render("  "+line+" (no key)") + "\n")
 		}
 	}
+	if end < n {
+		b.WriteString(statusStyle.Render(fmt.Sprintf("  ↓ %d more", n-end)) + "\n")
+	}
+	b.WriteString(statusStyle.Render(fmt.Sprintf("  %d/%d", m.pcursor+1, n)) + "\n")
 	return b.String()
 }
 
@@ -1095,6 +1233,10 @@ func (m *model) appendRaw(s string) {
 	m.vp.GotoBottom()
 }
 
+// Version is the running build, set by main before the TUI launches. Shown in
+// the header, banner, and status bar.
+var Version = "v2.0.0"
+
 // jurigArt is the wordmark, joined horizontally with an animated ghost.
 const jurigArt = `     ██ ██    ██ ██████  ██  ██████
      ██ ██    ██ ██   ██ ██ ██
@@ -1102,46 +1244,85 @@ const jurigArt = `     ██ ██    ██ ██████  ██  █�
 ██   ██ ██    ██ ██   ██ ██ ██    ██
  █████   ██████  ██   ██ ██  ██████`
 
-// ghostFrames animate the mascot: eyes blink, bob, and glance around.
+// ghostFrames animate the mascot: eyes blink, bob, glance around, and glitch.
 // Each frame is a clean 5-wide × 5-line box.
 var ghostFrames = []string{
 	" .-. \n(o o)\n| u |\n|   |\n'~-~'",
 	" .-. \n(o o)\n| u |\n|   |\n~'-'~",
-	" .-. \n( oo)\n| u |\n|   |\n'~-~'",
+	" .-. \n( oo)\n| u |\n| ~ |\n'~-~'",
 	" .-. \n(- -)\n| u |\n|   |\n'~-~'",
+	" .∙. \n(x x)\n| u |\n|   |\n`~-~´", // glitch blink
 	" .-. \n(o o)\n| u |\n|   |\n'~-~'",
-	" .-. \n(oo )\n| u |\n|   |\n~'-'~",
+	" .-. \n(oo )\n| u |\n| ~ |\n~'-'~",
+	" .-. \n(O O)\n| o |\n|   |\n'~-~'",
 }
 
-var shimmer = []lipgloss.Color{"#00FF9C", "#3BFFB2", "#6BFFC8", "#9BFFDD", "#6BFFC8", "#3BFFB2"}
+// shimmer is a smooth cyan → neon → mint → violet gradient cycle that travels
+// diagonally across the wordmark.
+var shimmer = []lipgloss.Color{
+	"#00E5FF", "#19F0D4", "#3BFFB2", "#6BFF9C", "#9BFFC8",
+	"#C8FFE5", "#9BE5FF", "#7AC8FF", "#8A7AFF", "#B07AFF",
+}
 
 // animMsg advances the header animation.
 type animMsg struct{}
 
 func animTick() tea.Cmd {
-	return tea.Tick(140*time.Millisecond, func(time.Time) tea.Msg { return animMsg{} })
+	return tea.Tick(110*time.Millisecond, func(time.Time) tea.Msg { return animMsg{} })
 }
 
-// renderLogo joins the animated ghost with the wordmark and applies a moving
-// color shimmer based on the current frame.
+// renderLogo joins the animated ghost with the wordmark, applies a diagonal
+// color shimmer, and pins a version + tagline strip beneath with an animated
+// scanline sweep.
 func (m *model) renderLogo() string {
-	ghost := ghostFrames[(m.frame/2)%len(ghostFrames)]
+	ghost := ghostFrames[(m.frame/3)%len(ghostFrames)]
 	logo := lipgloss.JoinHorizontal(lipgloss.Center, ghost, "   ", jurigArt)
-	return colorizeShimmer(logo, m.frame)
+	logo = colorizeShimmer(logo, m.frame)
+
+	w := lipgloss.Width(logo)
+	tag := segState.Render(" JURIG "+Version) + " " +
+		statusStyle.Render("· autonomous reverse-engineering agent")
+	return logo + "\n" + m.scanline(w) + "\n" + tag
 }
 
-// colorizeShimmer colors each non-space rune with a palette entry offset by the
-// frame, producing a wave that travels across the art.
+// scanline draws a thin rule with a bright gradient cell sweeping across it,
+// giving the header a subtle "powering up" motion.
+func (m *model) scanline(w int) string {
+	if w < 8 {
+		w = 8
+	}
+	pos := m.frame % w
+	var b strings.Builder
+	for i := 0; i < w; i++ {
+		d := pos - i
+		if d < 0 {
+			d = -d
+		}
+		switch {
+		case d == 0:
+			b.WriteString(lipgloss.NewStyle().Foreground(cNeon).Bold(true).Render("━"))
+		case d <= 2:
+			b.WriteString(lipgloss.NewStyle().Foreground(shimmer[(i+m.frame)%len(shimmer)]).Render("━"))
+		default:
+			b.WriteString(statusStyle.Render("─"))
+		}
+	}
+	return b.String()
+}
+
+// colorizeShimmer colors each non-space rune with a palette entry offset
+// diagonally by (col + 2*row + frame), producing a wave that travels across and
+// down the art.
 func colorizeShimmer(s string, frame int) string {
 	var b strings.Builder
-	for _, line := range strings.Split(s, "\n") {
+	for row, line := range strings.Split(s, "\n") {
 		col := 0
 		for _, r := range line {
 			if r == ' ' {
 				b.WriteRune(' ')
 				continue
 			}
-			c := shimmer[(col+frame)%len(shimmer)]
+			c := shimmer[(col+2*row+frame)%len(shimmer)]
 			b.WriteString(lipgloss.NewStyle().Foreground(c).Render(string(r)))
 			col++
 		}
@@ -1152,7 +1333,7 @@ func colorizeShimmer(s string, frame int) string {
 
 func (m *model) banner() string {
 	var b strings.Builder
-	b.WriteString(statusStyle.Render("autonomous reverse-engineering agent · android · binary · frida") + "\n\n")
+	b.WriteString(neonStyle.Render("jurig "+Version) + statusStyle.Render("  ·  autonomous reverse-engineering agent · android · binary · frida") + "\n\n")
 	b.WriteString(statusStyle.Render("model: "+m.router.ActiveLabel()) + statusStyle.Render("   (Ctrl+O to switch)") + "\n")
 	if m.resumed > 0 {
 		b.WriteString(neonStyle.Render(fmt.Sprintf("↻ resumed session — %d prior turns loaded", m.resumed)) + "\n")

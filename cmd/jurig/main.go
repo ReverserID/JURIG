@@ -6,15 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/imtaqin/jurig/internal/agent"
 	"github.com/imtaqin/jurig/internal/config"
-	"github.com/imtaqin/jurig/internal/cursor"
 	"github.com/imtaqin/jurig/internal/llm"
 	"github.com/imtaqin/jurig/internal/portable"
 	"github.com/imtaqin/jurig/internal/proxy"
@@ -22,16 +19,25 @@ import (
 	"github.com/imtaqin/jurig/internal/tui"
 )
 
+// Version is the build version, overridable via -ldflags "-X main.Version=…".
+var Version = "v2.0.0"
+
 func main() {
 	var (
 		cfgPath  = flag.String("config", config.DefaultPath(), "path to config.json")
 		target   = flag.String("target", "", "work dir for this session (default <work_dir>/session)")
 		printReq = flag.String("p", "", "headless: run this task, stream to stdout, exit")
 		fresh    = flag.Bool("fresh", false, "ignore any saved session and start clean")
+		showVer  = flag.Bool("version", false, "print version and exit")
 	)
+	flag.Usage = usage
 	flag.Parse()
+	if *showVer {
+		fmt.Println("jurig", Version)
+		return
+	}
 
-	// Subcommands: install <tool>, doctor, setup.
+	// Subcommands: install <tool>, doctor, setup, version, help.
 	forceSetup := false
 	if args := flag.Args(); len(args) > 0 {
 		switch args[0] {
@@ -41,8 +47,12 @@ func main() {
 			os.Exit(cmdDoctor(*cfgPath))
 		case "setup":
 			forceSetup = true
-		case "cursor":
-			os.Exit(cmdCursor(args[1:]))
+		case "version":
+			fmt.Println("jurig", Version)
+			return
+		case "help", "-h", "--help":
+			usage()
+			return
 		}
 	}
 
@@ -65,13 +75,76 @@ func main() {
 		}
 	}
 
-	router, err := llm.NewRouter(cfg)
-	if err != nil {
-		die("llm: %v\n\nrun `jurig setup` to reconfigure", err)
+	// Headless: build once, run one task, exit.
+	if *printReq != "" {
+		router, err := llm.NewRouter(cfg)
+		if err != nil {
+			die("llm: %v\n\nrun `jurig setup` to reconfigure", err)
+		}
+		ag, env, _, _, _ := newSession(cfg, router, *target)
+		env.Ask = func(q string, _ []string) string {
+			return "No interactive user (headless). Proceed autonomously: prefer static analysis; only use dynamic tools if a device is clearly available."
+		}
+		os.Exit(runHeadless(ag, *printReq))
 	}
 
+	// Interactive: relaunch loop so /setup can re-run the wizard live.
+	for {
+		router, err := llm.NewRouter(cfg)
+		if err != nil {
+			die("llm: %v\n\nrun `jurig setup` to reconfigure", err)
+		}
+		tui.Version = Version
+		ag, env, pm, proxyMgr, workDir := newSession(cfg, router, *target)
+
+		// Resume prior conversation + prompt history.
+		sessionPath := filepath.Join(workDir, "session.json")
+		var histInit []string
+		resumed := 0
+		if !*fresh {
+			if s, ok := agent.LoadSession(sessionPath); ok {
+				ag.Restore(s.History)
+				histInit = s.Prompts
+				resumed = len(s.History)
+			}
+		}
+
+		// Bridge agent → TUI for interactive ask_user questions.
+		askCh := make(chan tui.AskReq)
+		env.Ask = func(q string, opts []string) string {
+			r := tui.AskReq{Question: q, Options: opts, Reply: make(chan string, 1)}
+			askCh <- r
+			return <-r.Reply
+		}
+
+		prog := tui.New(ag, router, pm.Status(), sessionPath, histInit, resumed, askCh, proxyMgr, cfg, *cfgPath)
+		fm, err := prog.Run()
+		if err != nil {
+			die("tui: %v", err)
+		}
+		if !tui.WantsSetup(fm) {
+			break
+		}
+
+		// /setup → re-run the wizard, reload config, relaunch the loop.
+		ok, werr := tui.RunWizard(cfg, *cfgPath)
+		if werr != nil {
+			die("setup: %v", werr)
+		}
+		if ok {
+			if cfg, err = config.Load(*cfgPath); err != nil {
+				die("config reload: %v", err)
+			}
+		}
+		*fresh = false // keep the resumed session across a reconfigure
+	}
+}
+
+// newSession builds the toolchain, env, and agent for a run. Ask is left unset
+// for the caller to wire (headless default vs. interactive TUI bridge).
+func newSession(cfg *config.Config, router *llm.Router, target string) (*agent.Agent, *tools.Env, *portable.Manager, *proxy.Manager, string) {
 	pm := portable.New(cfg.ToolsDir)
-	workDir := *target
+	workDir := target
 	if workDir == "" {
 		workDir = filepath.Join(cfg.WorkDir, "session")
 	}
@@ -79,8 +152,8 @@ func main() {
 
 	proxyMgr := proxy.New(filepath.Join(workDir, "proxy"))
 	env := &tools.Env{WorkDir: workDir, Proxy: proxyMgr}
-	// Contextual toolchain: when the agent calls a tool whose binary is
-	// missing but auto-installable, fetch it on demand and stream progress.
+	// Contextual toolchain: when the agent calls a tool whose binary is missing
+	// but auto-installable, fetch it on demand and stream progress.
 	env.ResolveBin = func(name string) (string, error) {
 		return pm.ResolveOrInstall(name, func(s string) {
 			if env.Emit != nil {
@@ -90,39 +163,7 @@ func main() {
 	}
 	reg := tools.NewRegistry()
 	ag := agent.New(cfg, router, reg, env)
-
-	if *printReq != "" {
-		// Headless: no interactive user — answer scope questions with a default.
-		env.Ask = func(q string, _ []string) string {
-			return "No interactive user (headless). Proceed autonomously: prefer static analysis; only use dynamic tools if a device is clearly available."
-		}
-		os.Exit(runHeadless(ag, *printReq))
-	}
-
-	// Interactive session: resume prior conversation + prompt history.
-	sessionPath := filepath.Join(workDir, "session.json")
-	var histInit []string
-	resumed := 0
-	if !*fresh {
-		if s, ok := agent.LoadSession(sessionPath); ok {
-			ag.Restore(s.History)
-			histInit = s.Prompts
-			resumed = len(s.History)
-		}
-	}
-
-	// Bridge agent → TUI for interactive ask_user questions.
-	askCh := make(chan tui.AskReq)
-	env.Ask = func(q string, opts []string) string {
-		r := tui.AskReq{Question: q, Options: opts, Reply: make(chan string, 1)}
-		askCh <- r
-		return <-r.Reply
-	}
-
-	prog := tui.New(ag, router, pm.Status(), sessionPath, histInit, resumed, askCh, proxyMgr, cfg, *cfgPath)
-	if _, err := prog.Run(); err != nil {
-		die("tui: %v", err)
-	}
+	return ag, env, pm, proxyMgr, workDir
 }
 
 // runHeadless streams agent events to stdout (no TUI).
@@ -215,151 +256,30 @@ func cmdDoctor(cfgPath string) int {
 	return 0
 }
 
-// cmdCursor handles `jurig cursor login|status|logout` — native PKCE auth to a
-// Cursor subscription.
-func cmdCursor(args []string) int {
-	sub := "status"
-	if len(args) > 0 {
-		sub = args[0]
-	}
-	path := cursor.DefaultStorePath()
+// usage prints the CLI banner + command reference.
+func usage() {
+	const banner = ` .-.
+(o o)  jurig · autonomous reverse-engineering agent
+| u |  android · binary · frida
+'~-~'`
+	fmt.Fprintln(os.Stderr, banner)
+	fmt.Fprintf(os.Stderr, "\nversion %s\n", Version)
+	fmt.Fprintln(os.Stderr, `
+usage:
+  jurig                    launch the interactive TUI
+  jurig -p "<task>"        headless: run one task, stream to stdout, exit
+  jurig -target <dir>      set the session work dir
+  jurig -fresh             ignore any saved session
 
-	switch sub {
-	case "login":
-		p, err := cursor.GenerateAuthParams()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "cursor:", err)
-			return 1
-		}
-		fmt.Println("Opening browser to log in to Cursor…")
-		fmt.Println("If it doesn't open, visit:\n  " + p.LoginURL)
-		openBrowser(p.LoginURL)
-		fmt.Print("Waiting for login")
-		creds, err := cursor.Poll(p.UUID, p.Verifier, func(int) { fmt.Print(".") })
-		fmt.Println()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "cursor login:", err)
-			return 1
-		}
-		if err := cursor.Save(path, creds); err != nil {
-			fmt.Fprintln(os.Stderr, "save:", err)
-			return 1
-		}
-		fmt.Println("✓ logged in — token saved to", path)
-		return 0
-	case "status":
-		if !cursor.LoggedIn(path) {
-			fmt.Println("cursor: not logged in (run `jurig cursor login`)")
-			return 1
-		}
-		if _, err := cursor.ValidToken(path); err != nil {
-			fmt.Println("cursor: token invalid —", err)
-			return 1
-		}
-		fmt.Println("cursor: logged in, token valid")
-		return 0
-	case "logout":
-		_ = os.Remove(path)
-		fmt.Println("cursor: logged out")
-		return 0
-	case "token":
-		// Print a valid access token (refreshing if needed) for a bridge to use.
-		tok, err := cursor.ValidToken(path)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "cursor:", err)
-			return 1
-		}
-		fmt.Println(tok)
-		return 0
-	case "serve":
-		// Launch the cursor-openai-api bridge (OpenAI-compatible, port 3000).
-		port := "3000"
-		if len(args) > 1 {
-			port = args[1]
-		}
-		fmt.Printf("Starting cursor-openai-api bridge on :%s → set the 'cursor' provider (Ctrl+O)\n", port)
-		fmt.Println("(first time needs login: jurig cursor bridge login)")
-		return runBridge("serve", port)
-	case "bridge":
-		// Passthrough to cursor-openai-api (login, whoami, models, …).
-		return runBridge(args[1:]...)
-	case "chat":
-		// EXPERIMENTAL native Agent protocol test: jurig cursor chat <model> <prompt...>
-		if len(args) < 3 {
-			fmt.Println("usage: jurig cursor chat <model> <prompt>")
-			return 2
-		}
-		tok, err := cursor.ValidToken(path)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "cursor:", err)
-			return 1
-		}
-		model := args[1]
-		prompt := strings.Join(args[2:], " ")
-		fmt.Fprintln(os.Stderr, "[native cursor agent — experimental]")
-		out, err := cursor.NewClient(tok).Chat(context.Background(), model, "You are a helpful assistant.", prompt)
-		if out != "" {
-			fmt.Println(out)
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "cursor chat:", err)
-			return 1
-		}
-		return 0
-	default:
-		fmt.Println("usage: jurig cursor login|status|token|logout|serve [port]|bridge <args>")
-		fmt.Println("  login/status/token/logout : native Jurig auth (future no-bridge client)")
-		fmt.Println("  serve [port]              : run the cursor-openai-api bridge (default 3000)")
-		fmt.Println("  bridge login|whoami|...   : passthrough to cursor-openai-api")
-		return 2
-	}
-}
+commands:
+  setup                    (re)run the first-run provider wizard
+  doctor                   print config, providers, and toolchain status
+  install <tool>...        fetch a portable tool into tools_dir
+  version                  print version
+  help                     show this help
 
-// runBridge runs the cursor-openai-api npm package via bunx or npx, inheriting
-// stdio so login prompts and the running server are visible.
-func runBridge(args ...string) int {
-	runner, runnerArgs := bridgeRunner()
-	if runner == "" {
-		fmt.Fprintln(os.Stderr, "cursor: need bun or node/npx installed to run the cursor-openai-api bridge")
-		fmt.Fprintln(os.Stderr, "  install: https://github.com/shawtyygabriel/cursor-openai-api")
-		return 1
-	}
-	full := append(append(runnerArgs, "cursor-openai-api"), args...)
-	cmd := exec.Command(runner, full...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "cursor bridge:", err)
-		return 1
-	}
-	return 0
-}
-
-// bridgeRunner picks an available package runner: bunx, then npx.
-func bridgeRunner() (string, []string) {
-	if p, err := exec.LookPath("bunx"); err == nil {
-		return p, nil
-	}
-	if p, err := exec.LookPath("bun"); err == nil {
-		return p, []string{"x"}
-	}
-	if p, err := exec.LookPath("npx"); err == nil {
-		return p, []string{"-y"}
-	}
-	return "", nil
-}
-
-// openBrowser best-effort opens a URL in the default browser.
-func openBrowser(u string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", "", u)
-	case "darwin":
-		cmd = exec.Command("open", u)
-	default:
-		cmd = exec.Command("xdg-open", u)
-	}
-	_ = cmd.Start()
+flags:`)
+	flag.PrintDefaults()
 }
 
 func catalogList() string {

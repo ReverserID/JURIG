@@ -37,6 +37,13 @@
       "key_env": "DASHSCOPE_API_KEY",
       "models": ["qwen3-max", "qwen3-coder-plus", "qwen-max"]
     },
+    "custom": {
+      "kind": "openai",
+      "base_url": "http://localhost:20128/v1",
+      "key_env": "CUSTOM_API_KEY",
+      "auto_models": true,
+      "models": []
+    },
     "claude-cli": { "kind": "claude-cli", "models": ["default"] }
   },
   "tools_dir": "",

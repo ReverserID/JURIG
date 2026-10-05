@@ -2,6 +2,7 @@
 /jurig
 /jurig.exe
 *.exe
+*.exe~
 
 # bundled portable tools
 /tools-bin/
@@ -23,6 +24,9 @@ jadx_out/
 bundle_extracted/
 *_extracted/
 session.json
+
+# local launcher scripts
+run.bat
 
 # os
 .DS_Store

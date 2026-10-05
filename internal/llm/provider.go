@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/imtaqin/jurig/internal/config"
@@ -13,6 +14,18 @@ import (
 type Provider interface {
 	Name() string
 	Complete(ctx context.Context, req Request) (*Response, error)
+}
+
+// ModelLister is an optional Provider capability: fetching the model catalog
+// from the backend (OpenAI-compatible GET /models).
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]string, error)
+}
+
+// MaxOutputProvider is an optional Provider capability: the detected max output
+// token budget for a model (from the endpoint's /models metadata). 0 = unknown.
+type MaxOutputProvider interface {
+	MaxOutput(model string) int
 }
 
 // Choice is one selectable provider+model for the picker.
@@ -68,13 +81,23 @@ func build(name string, pc config.ProviderCfg) (Provider, bool, error) {
 		return NewAnthropic(pc.BaseURL, pc.APIKey), pc.APIKey != "", nil
 	case config.KindOpenAI:
 		// Ollama is local and needs no real key; treat any key (incl. the
-		// literal "ollama") as ready.
-		return NewOpenAI(name, pc.BaseURL, pc.APIKey), pc.APIKey != "", nil
+		// literal "ollama") as ready. A local gateway (localhost/127.0.0.1) is
+		// also usable keyless — ready as soon as it has a base URL.
+		ready := pc.APIKey != "" || (pc.BaseURL != "" && isLocalURL(pc.BaseURL))
+		return NewOpenAI(name, pc.BaseURL, pc.APIKey), ready, nil
 	case config.KindClaudeCLI:
 		return NewClaudeCLI("claude", ""), true, nil
 	default:
 		return nil, false, fmt.Errorf("provider %q: unknown kind %q", name, pc.Kind)
 	}
+}
+
+// isLocalURL reports whether a base URL points at the local machine.
+func isLocalURL(u string) bool {
+	return strings.Contains(u, "localhost") ||
+		strings.Contains(u, "127.0.0.1") ||
+		strings.Contains(u, "0.0.0.0") ||
+		strings.Contains(u, "[::1]")
 }
 
 // Complete dispatches to the active provider with the active model.
@@ -96,6 +119,12 @@ func (r *Router) Complete(ctx context.Context, req Request) (*Response, error) {
 	}
 	if req.MaxTokens == 0 {
 		req.MaxTokens = 8192
+		// Auto-detected per-model output cap (from the endpoint's /models) wins.
+		if mo, ok := p.(MaxOutputProvider); ok {
+			if n := mo.MaxOutput(req.Model); n > 0 {
+				req.MaxTokens = n
+			}
+		}
 	}
 	return p.Complete(ctx, req)
 }
@@ -149,6 +178,65 @@ func (r *Router) Catalog() []Choice {
 		}
 		return false
 	})
+	return out
+}
+
+// CanListModels reports whether a provider supports fetching its catalog.
+func (r *Router) CanListModels(name string) bool {
+	r.mu.RLock()
+	p := r.providers[name]
+	ready := r.ready[name]
+	r.mu.RUnlock()
+	_, ok := p.(ModelLister)
+	return ok && ready
+}
+
+// FetchModels pulls the live model list from a provider and merges it into the
+// config (union with any presets, sorted). Returns the merged list.
+func (r *Router) FetchModels(ctx context.Context, name string) ([]string, error) {
+	r.mu.RLock()
+	p := r.providers[name]
+	r.mu.RUnlock()
+	lister, ok := p.(ModelLister)
+	if !ok {
+		return nil, fmt.Errorf("provider %q cannot list models", name)
+	}
+	ids, err := lister.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pc := r.cfg.Providers[name]
+	seen := map[string]bool{}
+	merged := make([]string, 0, len(pc.Models)+len(ids))
+	for _, m := range append(append([]string{}, pc.Models...), ids...) {
+		if m != "" && !seen[m] {
+			seen[m] = true
+			merged = append(merged, m)
+		}
+	}
+	sort.Strings(merged)
+	pc.Models = merged
+	r.cfg.Providers[name] = pc
+	return merged, nil
+}
+
+// AutoModelProviders lists configured providers marked auto_models that can
+// currently list their catalog (ready + OpenAI-compatible).
+func (r *Router) AutoModelProviders() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []string
+	for name, pc := range r.cfg.Providers {
+		if !pc.AutoModels {
+			continue
+		}
+		if _, ok := r.providers[name].(ModelLister); ok && r.ready[name] {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 

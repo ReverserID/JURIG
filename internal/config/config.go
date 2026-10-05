@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Kind is a provider wire protocol.
@@ -24,6 +25,9 @@ type ProviderCfg struct {
 	Models  []string `json:"models"`
 	// KeyEnv names the env var to pull the key from if APIKey is empty.
 	KeyEnv string `json:"key_env,omitempty"`
+	// AutoModels: fetch the model catalog live from the backend's /models
+	// endpoint (OpenAI-compatible) instead of relying only on the preset list.
+	AutoModels bool `json:"auto_models,omitempty"`
 }
 
 // Selection is the currently active provider+model.
@@ -107,13 +111,17 @@ func Default() *Config {
 					"mimo-v2.5-tts",
 				},
 			},
-			"cursor": {
-				// Cursor subscription via the cursor-openai-api bridge (default
-				// port 3000). Run `jurig cursor serve` to launch it, then Ctrl+O.
-				Kind:    KindOpenAI,
-				BaseURL: "http://127.0.0.1:3000/v1",
-				APIKey:  "cursor",
-				Models:  []string{"claude-4.5-sonnet", "gpt-5", "auto"},
+			"custom": {
+				// Any OpenAI-compatible endpoint the operator points at: a local
+				// gateway (9router, OmniRoute, LM Studio, vLLM…) or a hosted
+				// service. Fill base_url + api_key in the setup wizard or config.
+				// Models auto-load from the endpoint's /models when reachable.
+				Kind:       KindOpenAI,
+				BaseURL:    "",
+				APIKey:     "",
+				KeyEnv:     "CUSTOM_API_KEY",
+				AutoModels: true,
+				Models:     []string{},
 			},
 			"claude-cli": {
 				Kind:   KindClaudeCLI,
@@ -165,11 +173,11 @@ func (c *Config) overlayEnv() {
 	if v := os.Getenv("JURIG_TOOLS_DIR"); v != "" {
 		c.ToolsDir = v
 	}
-	// Let a running Cursor->OpenAI bridge advertise its port.
-	if v := os.Getenv("CURSOR_BASE_URL"); v != "" {
-		if p, ok := c.Providers["cursor"]; ok {
+	// Custom provider base URL from the environment (OpenAI-compatible endpoint).
+	if v := os.Getenv("CUSTOM_BASE_URL"); v != "" {
+		if p, ok := c.Providers["custom"]; ok {
 			p.BaseURL = v
-			c.Providers["cursor"] = p
+			c.Providers["custom"] = p
 		}
 	}
 }
@@ -208,5 +216,19 @@ func (c *Config) ActiveReady() bool {
 	if p.Kind == KindClaudeCLI {
 		return true
 	}
-	return p.APIKey != ""
+	if p.APIKey != "" {
+		return true
+	}
+	// A local OpenAI-compatible gateway is usable without a key.
+	return p.Kind == KindOpenAI && isLocalBaseURL(p.BaseURL)
+}
+
+// isLocalBaseURL reports whether a base URL targets the local machine.
+func isLocalBaseURL(u string) bool {
+	for _, h := range []string{"localhost", "127.0.0.1", "0.0.0.0", "[::1]"} {
+		if strings.Contains(u, h) {
+			return true
+		}
+	}
+	return false
 }

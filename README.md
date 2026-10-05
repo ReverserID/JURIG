@@ -58,7 +58,7 @@ Presets shipped (`config.json` → `providers`):
 | **kimi** | openai | api.kimi.com/coding/v1 | `KIMI_API_KEY` |
 | **moonshot** | openai | api.moonshot.ai/v1 | `MOONSHOT_API_KEY` |
 | **dashscope / Qwen** (Alibaba) | openai | dashscope-intl…/compatible-mode/v1 | `DASHSCOPE_API_KEY` |
-| cursor (subscription) | openai | cursor-openai-api bridge | — (browser auth) |
+| **custom** (any OpenAI-compat) | openai | *you set base_url* | `CUSTOM_API_KEY` |
 | claude-cli (subscription) | claude-cli | `claude` binary | — |
 
 Pick provider+model **live in the TUI with Ctrl+O**, or set
@@ -74,34 +74,26 @@ third-party HTTP harnesses (Apr 2026), so this path shells out to the `claude`
 binary. Advisory/chat only — no native tool-calling; use an `openai`/`anthropic`
 provider for the full autonomous tool loop.
 
-**cursor** (Cursor subscription): API tokens are expensive; a Cursor Pro/Max
-subscription is cheaper. Jurig ships **native Cursor auth**:
+**custom** — one generic provider for ANY OpenAI-compatible endpoint. Jurig
+ships no hardcoded gateway; you fill the base URL yourself in the setup wizard
+(`/setup`) or in `config.json`. Works for:
 
-```sh
-jurig cursor login     # PKCE browser login → ~/.jurig/cursor-auth.json
-jurig cursor status    # verify / auto-refresh
-jurig cursor token     # print a valid access token
-```
+- Local subscription routers — [9router](https://github.com/decolua/9router)
+  (`npx 9router`) or [OmniRoute](https://github.com/diegosouzapw/OmniRoute),
+  which front Cursor / Claude Code / Codex accounts on `http://localhost:20128/v1`.
+- Local model servers — vLLM, LM Studio, llama.cpp, etc.
+- Any hosted OpenAI-compatible API.
 
-Cursor chat is a stateful Agent protocol (Connect-RPC + protobuf over HTTP/2),
-so today the `cursor` provider talks OpenAI-compat to the
-[cursor-openai-api](https://github.com/shawtyygabriel/cursor-openai-api) bridge,
-which Jurig can launch for you (needs `bun` or `node`/`npx`):
+Set `base_url` (e.g. `http://localhost:20128/v1`) and, if the endpoint needs one,
+`api_key` (or the `CUSTOM_API_KEY` env / `CUSTOM_BASE_URL` for the URL). A
+localhost gateway is treated as ready without a key. The `custom` provider is
+marked `auto_models`, so the picker (Ctrl+O) fetches the live catalog from the
+endpoint's `/models` on open — press `r` to refresh any provider's list. For a
+subscription router, model ids carry a route prefix (`cu/` Cursor, `cc/` Claude
+Code, `cx/` Codex) — the auto-loaded list shows the exact ids.
 
-```sh
-jurig cursor bridge login    # one-time OAuth (opens browser)
-jurig cursor serve           # runs the bridge on :3000 — keep this terminal open
-# in another terminal:
-jurig                        # Ctrl+O → cursor/<model>
-```
-
-`jurig cursor serve [port]` shells out to `cursor-openai-api` via bunx/npx and
-the `cursor` provider defaults to `http://127.0.0.1:3000/v1`. Override with
-`CURSOR_BASE_URL` for a custom port.
-
-Jurig also ships **native Cursor auth** (`jurig cursor login/status/token`) for a
-future no-bridge Go Agent client (in progress). **Using Cursor outside the editor
-may violate its ToS — your account, your risk.**
+**Using subscriptions outside their official clients may violate ToS — your
+account, your risk.**
 
 ## Build
 

@@ -4,6 +4,7 @@ package portable
 
 import (
 	"fmt"
+	"io/fs"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -28,7 +29,7 @@ var candidates = map[string][]string{
 	"frida":    {"frida"},
 	"frida-ps": {"frida-ps"},
 	"ghidra":   {"analyzeHeadless"},
-	"objdump":  {"objdump"},
+	"objdump":  {"objdump", "llvm-objdump"},
 }
 
 // Resolve returns an executable path for name, searching the bundled
@@ -54,7 +55,13 @@ func (m *Manager) Resolve(name string) (string, error) {
 		}
 	}
 
-	// 2) PATH
+	// 2) recursive: archives often nest a top-level dir (radare2-6.0.0-w64/bin,
+	// ghidra_11.x/support, llvm-mingw/bin). Walk the tool's dir for any exe.
+	if hit := m.walkFor(filepath.Join(m.toolsDir, name), names); hit != "" {
+		return hit, nil
+	}
+
+	// 3) PATH
 	for _, base := range names {
 		if p, err := exec.LookPath(base); err == nil {
 			return p, nil
@@ -62,6 +69,28 @@ func (m *Manager) Resolve(name string) (string, error) {
 	}
 
 	return "", fmt.Errorf("tool %q not found (looked in %s and PATH); run `jurig install %s`", name, m.toolsDir, name)
+}
+
+// walkFor searches root recursively for any of the given base exe names.
+func (m *Manager) walkFor(root string, bases []string) string {
+	want := map[string]bool{}
+	for _, base := range bases {
+		for _, exe := range execNames(base) {
+			want[strings.ToLower(exe)] = true
+		}
+	}
+	var found string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || found != "" {
+			return nil
+		}
+		if want[strings.ToLower(d.Name())] && isExecFile(p) {
+			found = p
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // Status reports resolved path or a not-found marker for each known tool.

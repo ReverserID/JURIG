@@ -39,6 +39,51 @@ func (t *Radare2Tool) Run(ctx context.Context, input json.RawMessage, env *Env) 
 	return runCmd(ctx, env, 4*time.Minute, env.WorkDir, bin, "-q", "-c", script, resolvePath(env, in.File))
 }
 
+// ObjdumpTool runs objdump/llvm-objdump for quick disassembly and header dumps
+// of a native binary — lighter than radare2 for a fast look.
+type ObjdumpTool struct{}
+
+func (t *ObjdumpTool) Name() string { return "objdump" }
+func (t *ObjdumpTool) Description() string {
+	return "Dump a native binary with objdump/llvm-objdump. mode: 'disasm' (-d), 'headers' (-x), 'symbols' (-T), 'sections' (-h), 'all' (-x -d). Fast disassembly/header view; use radare2 for deeper analysis."
+}
+func (t *ObjdumpTool) Schema() map[string]any {
+	return schema(map[string]any{
+		"file": strProp("path to the native binary (.so/.elf/.exe/.o)"),
+		"mode": strProp("disasm | headers | symbols | sections | all (default disasm)"),
+	}, "file")
+}
+func (t *ObjdumpTool) Run(ctx context.Context, input json.RawMessage, env *Env) (string, error) {
+	var in struct {
+		File string `json:"file"`
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return "", err
+	}
+	bin, err := env.ResolveBin("objdump")
+	if err != nil {
+		return "", err
+	}
+	var flags []string
+	switch in.Mode {
+	case "", "disasm":
+		flags = []string{"-d"}
+	case "headers":
+		flags = []string{"-x"}
+	case "symbols":
+		flags = []string{"-T"}
+	case "sections":
+		flags = []string{"-h"}
+	case "all":
+		flags = []string{"-x", "-d"}
+	default:
+		flags = []string{"-d"}
+	}
+	args := append(flags, resolvePath(env, in.File))
+	return runCmd(ctx, env, 4*time.Minute, env.WorkDir, bin, args...)
+}
+
 // GhidraTool runs Ghidra's analyzeHeadless to auto-analyze a native binary and
 // optionally run a post-script (e.g. a decompiler dump). Heavy but thorough —
 // use for native .so/ELF/PE when radare2 is not enough.
