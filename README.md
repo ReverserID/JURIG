@@ -16,16 +16,8 @@ Fully autonomous, AI-agentic **reverse-engineering framework** with a TUI.
 Android-first (APK/DEX) plus native binaries. Written in Go, no MCP — every
 tool is a native subprocess wrapper around a portable RE binary.
 
-```
-┌─ JURIG ────────────────────────────────────────────┐
-│ agent loop  →  tool registry  →  portable toolchain │
-│      ↑              │                                │
-│  LLM router   jadx · radare2 · apktool · adb · frida │
-│  (anthropic /  · strings · shell · read/write_file   │
-│   openrouter /                                       │
-│   claude-cli)                                        │
-└─────────────────────────────────────────────────────┘
-```
+<img width="1764" height="923" alt="image" src="https://github.com/user-attachments/assets/ccc63ab8-6057-4eb2-8052-c97ec5c7b31a" />
+
 
 ## Design
 
